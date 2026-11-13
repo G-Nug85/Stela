@@ -78,7 +78,7 @@ pub static NVIDIA: GpuStack = GpuStack {
 #[cfg(feature = "nouveau-port")]
 pub unsafe fn start_kernel() -> Result<(), stela_linux::owner::Errno> {
     // SAFETY: the caller's contract.
-    unsafe { crate::nouveau::start() }
+    unsafe { crate::linux::start() }
 }
 
 impl GpuStack {

@@ -55,8 +55,12 @@ impl Kernel {
     }
 }
 
-/// Every stack this build holds.
+/// Every stack this build holds: amdgpu's only in an image built with it.
+#[cfg(not(feature = "amdgpu-port"))]
 pub static STACKS: [&GpuStack; 1] = [&NVIDIA];
+/// Every stack this build holds: amdgpu's only in an image built with it.
+#[cfg(feature = "amdgpu-port")]
+pub static STACKS: [&GpuStack; 2] = [&NVIDIA, &AMD];
 
 /// nouveau with GSP firmware, NVK and NAK.
 pub static NVIDIA: GpuStack = GpuStack {
@@ -154,7 +158,13 @@ mod tests {
         let nvidia = GpuStack::select(&adapter(0x10de)).unwrap();
         assert!(core::ptr::eq(nvidia, &NVIDIA));
         assert_eq!(nvidia.kernel.driver, "nouveau");
-        for vendor in [0x1002, 0x8086, 0x1234] {
+        let amd = GpuStack::select(&adapter(0x1002));
+        if cfg!(feature = "amdgpu-port") {
+            assert!(amd.is_ok_and(|amd| core::ptr::eq(amd, &AMD)));
+        } else {
+            assert_eq!(amd.err(), Some(adapter(0x1002).unavailable_reason()));
+        }
+        for vendor in [0x8086, 0x1234] {
             let adapter = adapter(vendor);
             assert_eq!(
                 GpuStack::select(&adapter).err(),

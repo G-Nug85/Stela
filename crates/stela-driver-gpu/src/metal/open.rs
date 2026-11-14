@@ -19,14 +19,16 @@ use crate::{
         service::{Service, identity::DeviceEpoch},
         shader::Compiler,
         vulkan::{
+            MemoryHeapFlags, MemoryProperties,
             backend::Backend,
-            physical::{Identity, PciBusInfo},
+            physical::{Identity, PciBusInfo, PhysicalDevice},
         },
     },
     stack::GpuStack,
 };
 #[cfg(feature = "metal-vulkan")]
 use alloc::boxed::Box;
+use alloc::{format, string::String};
 
 /// The negotiated PCI Express link, from the Link Status register
 /// (`PCI_EXP_LNKSTA`) of the GPU's PCIe capability.
@@ -139,6 +141,45 @@ fn device<B: Backend, C: Compiler>(
     Ok(Device::new(backend, compiler, &platform)?)
 }
 
+/// What the Vulkan driver reports of `physical`, for the boot log:
+/// `VULKAN DEVICE …`, which is all a boot shows of a GPU without display.
+pub fn describe(physical: &PhysicalDevice) -> String {
+    let identity = &physical.identity;
+    let api = identity.api_version;
+    let mut line = format!(
+        "VULKAN DEVICE \"{}\" {:04x}:{:04x} {:?} {:?} vulkan={}.{}.{} subgroup={}..{} heaps:",
+        identity.device_name,
+        identity.vendor_id,
+        identity.device_id,
+        identity.driver_id,
+        identity.device_type,
+        api >> 22,
+        (api >> 12) & 0x3ff,
+        api & 0xfff,
+        physical.limits.min_subgroup_size,
+        physical.limits.max_subgroup_size,
+    );
+    for heap in &physical.memory.heaps {
+        let local = if heap.flags.contains(MemoryHeapFlags::DEVICE_LOCAL) {
+            "local"
+        } else {
+            "host"
+        };
+        line.push_str(&format!(" {}M/{local}", heap.size >> 20));
+    }
+    let visible = physical.memory.types.iter().any(|memory| {
+        memory
+            .properties
+            .contains(MemoryProperties::DEVICE_LOCAL | MemoryProperties::HOST_VISIBLE)
+    });
+    line.push_str(if visible {
+        " host-visible-vram=yes"
+    } else {
+        " host-visible-vram=no"
+    });
+    line
+}
+
 /// The Metal service over a linked Vulkan driver and the AIR compiler.
 #[cfg(feature = "metal-vulkan")]
 pub type NativeService = Service<NativeBackend, AirCompiler>;
@@ -222,6 +263,7 @@ pub unsafe fn open(
 ) -> Result<NativeService, OpenError> {
     // SAFETY: the caller's guarantees.
     let (backend, compiler) = unsafe { stack(loader, gpu.pci, exporter, compiler) }?;
+    (loader.log)(&describe(backend.physical_device()));
     serve(backend, compiler, gpu, epoch)
 }
 
@@ -406,5 +448,15 @@ mod tests {
                 reported: PhysicalDeviceType::DiscreteGpu
             })))
         );
+    }
+
+    #[test]
+    fn the_log_names_the_device_its_driver_and_heaps() {
+        let backend = radv();
+        let line = describe(backend.physical.as_ref().unwrap());
+        assert!(line.starts_with(
+            "VULKAN DEVICE \"AMD Radeon RX 6800 XT (RADV NAVI21)\" 1002:73bf MesaRadv DiscreteGpu"
+        ));
+        assert!(line.contains(" heaps: "));
     }
 }

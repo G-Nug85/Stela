@@ -144,3 +144,33 @@ fn admit(
         .map(|chip| chip.platform(attachment))
         .map_err(open::Refusal::Amd)
 }
+
+/// RADV as linked into the image, with its driver-internal calls
+/// (`compat/mesa/radv_nir_options.c`). It has neither of NVK's hooks yet: a
+/// commit's submission runs on its PE, whose ioctls wait for the boot CPU,
+/// and a submission amdgpu refuses loses the device, which the service
+/// reopens.
+#[cfg(all(feature = "radv", not(test)))]
+pub const DRIVER: Option<super::native::Driver> = Some({
+    use super::native::{Driver, vk};
+    use core::ffi::{c_char, c_void};
+    unsafe extern "system" {
+        fn vk_icdGetInstanceProcAddr(
+            instance: vk::Instance,
+            name: *const c_char,
+        ) -> vk::PFN_vkVoidFunction;
+    }
+    unsafe extern "C" {
+        fn stela_radv_nir_options(physical: vk::PhysicalDevice) -> *const c_void;
+    }
+    Driver {
+        get_instance_proc_addr: vk_icdGetInstanceProcAddr,
+        nir_options: stela_radv_nir_options,
+        submit_thread: None,
+        refusals: None,
+    }
+});
+
+/// No RADV in an image that links another Vulkan driver.
+#[cfg(all(feature = "metal-linked", not(feature = "radv"), not(test)))]
+pub const DRIVER: Option<super::native::Driver> = None;

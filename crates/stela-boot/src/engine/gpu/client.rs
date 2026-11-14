@@ -1,5 +1,6 @@
-//! NVK's process services (`compat/libc/stela/host.h`), from whichever PE runs
-//! it.
+//! The Mesa driver's process services (`compat/libc/stela/host.h`), from
+//! whichever PE runs it: NVK's over nouveau, or RADV's over amdgpu, whose
+//! ioctls and mappings pass to the DRM driver alike.
 //!
 //! Linux's files belong to the environment on the boot CPU, so a PE posts its
 //! call, ends the boot PE's slice and spins: an ioctl costs the caller a

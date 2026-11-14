@@ -34,6 +34,8 @@ metal-vulkan = ["metal", "dep:ash"]
 metal-linked = ["metal-vulkan"]
 # The Vulkan driver the image links is NVK, the NVIDIA stack's.
 nvk = ["metal-linked"]
+# The Vulkan driver the image links is RADV, the AMD stack's.
+radv = ["metal-linked"]
 
 [dependencies]
 stela-linux = { path = "../stela-linux", optional = true }

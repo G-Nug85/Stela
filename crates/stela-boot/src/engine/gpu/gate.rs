@@ -1,8 +1,10 @@
-//! The Metal service over NVK, which the guest reaches through StelaGPU's gate,
+//! The Metal service over the linked Mesa driver, which the guest reaches
+//! through StelaGPU's gate: NVK over nouveau, or in an image built with
+//! `radv`, RADV over amdgpu.
 //!
-//! It opens on the boot CPU once nouveau has bound the GPUs, before the guest's
-//! DeviceTree is final, so the tree has a gate only with a device behind it,
-//! and one for each GPU that opened.
+//! It opens on the boot CPU once the driver has bound the GPUs, before the
+//! guest's DeviceTree is final, so the tree has a gate only with a device
+//! behind it, and one for each GPU that opened.
 //!
 //! Each service runs on a stack of its own, deep enough for a compile. Its
 //! lock means one is enough; opening comes before any caller. A second
@@ -375,8 +377,8 @@ fn report(reason: &str) {
     }
 }
 
-/// Logs each distinct error or warning NVK reports, such as why a call failed
-/// with only a generic result: in a job too, where no slice ends in it.
+/// Logs each distinct error or warning the driver reports, such as why a
+/// call failed with only a generic result: in a job too, where no slice ends in it.
 fn driver_message(text: &str) {
     static SEEN: Seen<128> = Seen::new();
     if let Some(unheld) = SEEN.first_time(text) {
@@ -1204,6 +1206,10 @@ fn open_gpu(
     });
     match opened? {
         Ok(service) => {
+            output::arguments(format_args!(
+                "GPU {}: Metal service open at DRM minor {index}\n",
+                bound.name
+            ));
             // Without a second stack, every compilation stays in its turn.
             service.set_wait_bound(gpu.tsc_hz / 1000 * WAIT_BOUND_MILLIS);
             service.set_look_budget(gpu.tsc_hz / 1_000_000 * LOOK_MICROS);

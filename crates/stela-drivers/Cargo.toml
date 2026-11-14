@@ -24,6 +24,7 @@ metal = ["stela-driver-gpu/metal"]
 metal-vulkan = ["stela-driver-gpu/metal-vulkan"]
 metal-linked = ["stela-driver-gpu/metal-linked"]
 nvk = ["stela-driver-gpu/nvk"]
+radv = ["stela-driver-gpu/radv"]
 
 [dependencies]
 stela-driver-audio = { path = "../stela-driver-audio" }

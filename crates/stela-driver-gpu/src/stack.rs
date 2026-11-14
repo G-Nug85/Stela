@@ -98,7 +98,7 @@ pub static AMD: GpuStack = GpuStack {
     #[cfg(feature = "metal")]
     metal: crate::metal::amd::ADMISSION,
     #[cfg(all(feature = "metal-linked", not(test)))]
-    vulkan: None,
+    vulkan: crate::metal::amd::DRIVER,
 };
 
 /// Brings Linux up and registers every kernel driver built into the image,

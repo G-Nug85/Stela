@@ -3151,6 +3151,7 @@ fn start_devices(
                 gpu::serve(
                     handoff.screen.map(|screen| screen.resolution()),
                     firmware.as_deref(),
+                    options.display_size,
                 );
             }
             disks.profile_callbacks(options.profile);

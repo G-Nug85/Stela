@@ -168,6 +168,9 @@ pub const DRIVER: Option<super::native::Driver> = Some({
         nir_options: stela_radv_nir_options,
         submit_thread: None,
         refusals: None,
+        // amdgpu's recovery from a hung GPU holds back the VM work closing
+        // RADV's file waits for.
+        keep_lost: true,
     }
 });
 

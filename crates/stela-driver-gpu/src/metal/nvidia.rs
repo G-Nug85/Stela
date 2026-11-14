@@ -143,6 +143,7 @@ pub const DRIVER: Option<super::native::Driver> = Some({
             forget: stela_nvk_forget_failures,
             count: stela_nvk_count_failures,
         }),
+        keep_lost: false,
     }
 });
 

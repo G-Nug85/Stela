@@ -87,6 +87,11 @@ pub struct Loader {
     /// Submissions the driver refused while keeping the device. `None` for
     /// a driver that loses the device instead.
     pub refusals: Option<Refusals>,
+    /// The device is never released once its GPU may have hung: releasing
+    /// it closes the driver's file, whose close waits for the kernel
+    /// driver's recovery from the hang, which may never end. Its open waits
+    /// for a first submission before the device is served.
+    pub keep_lost: bool,
     /// Waits a moment, as the platform's waits do: a call outside the
     /// service's turn may wait for the boot processor.
     pub relax: fn(),
@@ -106,6 +111,8 @@ pub struct Driver {
     pub submit_thread: Option<unsafe extern "C" fn(vk::Queue) -> vk::Result>,
     /// [`Loader::refusals`].
     pub refusals: Option<Refusals>,
+    /// [`Loader::keep_lost`].
+    pub keep_lost: bool,
 }
 
 impl Driver {
@@ -116,6 +123,7 @@ impl Driver {
             log,
             submit_thread: self.submit_thread,
             refusals: self.refusals,
+            keep_lost: self.keep_lost,
             relax,
         }
     }

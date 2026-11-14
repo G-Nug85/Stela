@@ -36,6 +36,7 @@ use stela_drivers::gpu::metal::{
     timing::{ExitWatch, Totals},
     vulkan::physical::PciBusInfo,
 };
+use stela_drivers::gpu::stack::ResetState;
 use stela_linux::{
     client::Run,
     function::{dma_quarantine_status, quarantined_functions},
@@ -1167,6 +1168,8 @@ fn open_gpu(
         crate::output::arguments(format_args!("GPU {}: {reason}\n", bound.name));
         None
     };
+    // Read before the GPU's first work, for the guest's `StelaHost`.
+    client::remember_memory(index as u32, bound.stack);
     let Some(driver) = bound.stack.vulkan.as_ref() else {
         return refuse("this image links no Vulkan driver for it");
     };
@@ -1199,6 +1202,18 @@ fn open_gpu(
             location_number: index as u64,
         },
     };
+    // Made before the first submission, so a reset it caused shows on it.
+    let driver_name = bound.stack.kernel.driver;
+    let watch = bound.stack.kernel.reset.as_ref().and_then(|reset| {
+        let watch = client::ResetWatch::new(index as u32, reset);
+        if watch.is_none() {
+            output::arguments(format_args!(
+                "GPU {}: no {driver_name} context to watch for resets\n",
+                bound.name
+            ));
+        }
+        watch
+    });
     let mut opened = None;
     run(top, &mut || {
         construct(constructed);
@@ -1206,6 +1221,29 @@ fn open_gpu(
     });
     match opened? {
         Ok(service) => {
+            if let Some(state @ (ResetState::Reset | ResetState::Resetting)) =
+                watch.as_ref().and_then(client::ResetWatch::state)
+            {
+                // The first submission hung the GPU and the driver's recovery
+                // took it: its fence was signaled by the reset, not the GPU.
+                // Every later file close and submission waits on that reset,
+                // which on Navi 21 has not been seen to end. The service is
+                // kept unreleased, as its release closes the driver's file.
+                output::arguments(format_args!(
+                    "GPU {}: {driver_name} reset the GPU during its first submission{}; \
+                     the Mac boots without Metal on it\n",
+                    bound.name,
+                    if state == ResetState::Resetting {
+                        ", reset still in progress"
+                    } else {
+                        ""
+                    },
+                ));
+                core::mem::forget(service);
+                // The reset unmapped the display's buffers too.
+                super::display::abandon();
+                return None;
+            }
             output::arguments(format_args!(
                 "GPU {}: Metal service open at DRM minor {index}\n",
                 bound.name

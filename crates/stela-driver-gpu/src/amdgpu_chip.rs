@@ -229,6 +229,61 @@ pub mod query {
         let mut sizes = VramGtt::default();
         (info(control, VRAM_GTT, &mut sizes) && sizes.vram != 0).then_some(sizes.vram)
     }
+
+    /// `DRM_IOCTL_AMDGPU_CTX`: `DRM_IOWR(DRM_COMMAND_BASE + 0x02, union
+    /// drm_amdgpu_ctx)`.
+    const CTX: u32 = 0xc010_6442;
+    const CTX_OP_ALLOC_CTX: u32 = 1;
+    const CTX_OP_QUERY_STATE2: u32 = 4;
+    /// `AMDGPU_CTX_QUERY2_FLAGS_RESET`: the GPU was reset since the context
+    /// was made.
+    const CTX_RESET: u64 = 1 << 0;
+    /// `AMDGPU_CTX_QUERY2_FLAGS_RESET_IN_PROGRESS`: amdgpu is resetting it.
+    const CTX_RESET_IN_PROGRESS: u64 = 1 << 5;
+
+    /// `union drm_amdgpu_ctx`: `drm_amdgpu_ctx_in`, over which the kernel
+    /// writes `drm_amdgpu_ctx_out` (`alloc.ctx_id` or `state.flags`).
+    #[repr(C)]
+    #[derive(Default)]
+    struct Context {
+        op: u32,
+        flags: u32,
+        ctx_id: u32,
+        priority: i32,
+    }
+
+    /// Makes an amdgpu context, answering its `ctx_id`.
+    pub fn reset_watch(control: Control) -> Option<u32> {
+        let mut context = Context {
+            op: CTX_OP_ALLOC_CTX,
+            ..Context::default()
+        };
+        // `alloc.ctx_id` is the output's first word.
+        (control(CTX, (&raw mut context).cast()) == 0).then_some(context.op)
+    }
+
+    /// `AMDGPU_CTX_QUERY2_FLAGS_*` of the context `ctx_id`. Takes only the
+    /// file's own context lock.
+    pub fn reset_state(control: Control, ctx_id: u32) -> Option<crate::stack::ResetState> {
+        use crate::stack::ResetState;
+        let mut context = Context {
+            op: CTX_OP_QUERY_STATE2,
+            ctx_id,
+            ..Context::default()
+        };
+        if control(CTX, (&raw mut context).cast()) != 0 {
+            return None;
+        }
+        // `state.flags` is the output's first eight bytes.
+        let flags = u64::from(context.op) | u64::from(context.flags) << 32;
+        Some(if flags & CTX_RESET_IN_PROGRESS != 0 {
+            ResetState::Resetting
+        } else if flags & CTX_RESET != 0 {
+            ResetState::Reset
+        } else {
+            ResetState::Running
+        })
+    }
 }
 
 #[cfg(test)]

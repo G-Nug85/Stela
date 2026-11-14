@@ -44,6 +44,7 @@ use core::{
 use stela_boot_core::gpu_requests::{HostCall, Request as Code};
 use stela_boot_core::page_window::Cache;
 use stela_boot_core::posted_call::{self, Claim};
+use stela_drivers::gpu::stack::{GpuStack, Reset, ResetState};
 use stela_drivers::platform::work::{WorkError, service::Idle};
 use stela_linux::{
     client,
@@ -382,9 +383,7 @@ unsafe fn perform(gpu: &Installed, operation: Operation) -> i64 {
             }
             Operation::Map { fd, offset, size } => {
                 let result = map_pages(gpu, fd, offset, size);
-                if result < 0 {
-                    refused::map(fd, offset, size, result);
-                }
+                refused::map(fd, offset, size, result);
                 result
             }
             Operation::Unmap(address) => {
@@ -1440,22 +1439,75 @@ pub(super) fn query<T>(
     if fd < 0 {
         return None;
     }
-    let answer = ask(&mut |request, argument| {
-        submit(Operation::Control {
-            fd,
-            request,
-            argument,
-        }) as i32
-    });
+    let answer = ask(&mut device_control(fd));
     close_descriptor(fd);
     answer
 }
 
+/// The device memory bytes [`remember_memory`] read of each bound GPU, by
+/// index; zero before it read them.
+static MEMORY_BYTES: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+
+/// Asks the kernel driver of the bound GPU at `index` for its device memory
+/// once, before the GPU's first work, for [`vram_bytes`].
+pub(super) fn remember_memory(index: u32, stack: &GpuStack) {
+    if let Some(bytes) = query(index, stack.kernel.memory_bytes)
+        && let Some(kept) = MEMORY_BYTES.get(index as usize)
+    {
+        kept.store(bytes, Ordering::Relaxed);
+    }
+}
+
 /// The device memory bytes of the bound GPU at `index`, for the guest's
-/// `StelaHost`.
+/// `StelaHost`, as the service's open read them. Asking the driver again
+/// would open and close a file of the GPU, and amdgpu's close waits,
+/// unbounded, for its VM's page-table clear: on a GPU amdgpu is still
+/// resetting that never comes, and the boot stopped at "Setting up the
+/// Mac's hardware".
 pub(in crate::engine) fn vram_bytes(index: u32) -> Option<u64> {
-    let stack = installed()?.start.bound.get(index as usize)?.stack;
-    query(index, stack.kernel.memory_bytes)
+    MEMORY_BYTES
+        .get(index as usize)
+        .map(|kept| kept.load(Ordering::Relaxed))
+        .filter(|&bytes| bytes != 0)
+}
+
+/// A kernel driver's watch for resets on a file of its own, made before a
+/// GPU's first work ([`stela_drivers::gpu::stack::Reset`]). Its file stays
+/// open for the boot: closing a file of a GPU in reset waits for the
+/// reset's end.
+pub(super) struct ResetWatch {
+    fd: c_int,
+    context: u32,
+    reset: &'static Reset,
+}
+
+impl ResetWatch {
+    /// A watch on the bound GPU at `index`; `None` when the driver gave no
+    /// file or context.
+    pub(super) fn new(index: u32, reset: &'static Reset) -> Option<Self> {
+        let fd = submit(Operation::Open(RENDER_MINOR + index)) as c_int;
+        if fd < 0 {
+            return None;
+        }
+        let Some(context) = (reset.watch)(&mut device_control(fd)) else {
+            // A file without a context watches nothing; it closes while the
+            // GPU has had no work.
+            close_descriptor(fd);
+            return None;
+        };
+        Some(Self { fd, context, reset })
+    }
+
+    /// Whether the driver reset the GPU since the watch was made, `None`
+    /// when it did not answer.
+    pub(super) fn state(&self) -> Option<ResetState> {
+        (self.reset.state)(&mut device_control(self.fd), self.context)
+    }
+}
+
+/// The device-control calls on `fd`, as a stack's queries make them.
+fn device_control(fd: c_int) -> impl FnMut(u32, *mut c_void) -> i32 {
+    move |request, argument| control(fd, request, argument) as i32
 }
 
 /// Whether a fault at `address` may be on a client's mapping: a page past

@@ -13,6 +13,7 @@ use crate::{
     metal::{
         amd,
         capabilities::Platform,
+        command_buffer::Segment,
         device::Device,
         error::Error,
         nvidia,
@@ -20,7 +21,7 @@ use crate::{
         shader::Compiler,
         vulkan::{
             MemoryHeapFlags, MemoryProperties,
-            backend::Backend,
+            backend::{Backend, Object},
             physical::{Identity, PciBusInfo, PhysicalDevice},
         },
     },
@@ -180,6 +181,31 @@ pub fn describe(physical: &PhysicalDevice) -> String {
     line
 }
 
+/// How long a first submission may take to signal: a GPU whose rings do
+/// not run never does, and the boot goes on without its Metal device.
+const FIRST_SUBMISSION_NS: u64 = 2_000_000_000;
+
+/// Submits one empty command buffer that signals a timeline semaphore and
+/// waits for it: the first time the kernel driver's command submission, its
+/// fence and its interrupt run for the device. Whether it signaled in time.
+pub fn first_submission<B: Backend>(backend: &mut B) -> Result<bool, Error> {
+    let semaphore = backend.create_semaphore(0)?;
+    let segment = Segment {
+        waits: alloc::vec::Vec::new(),
+        binds: alloc::vec::Vec::new(),
+        commands: alloc::vec::Vec::new(),
+        signals: alloc::vec![(semaphore, 1)],
+    };
+    let signaled = backend
+        .submit(core::slice::from_ref(&segment))
+        .and_then(|()| backend.wait_semaphore(semaphore, 1, FIRST_SUBMISSION_NS));
+    // A semaphore whose signal never came stays, as the GPU may yet write it.
+    if matches!(signaled, Ok(true)) {
+        backend.destroy(Object::Semaphore(semaphore));
+    }
+    signaled
+}
+
 /// The Metal service over a linked Vulkan driver and the AIR compiler.
 #[cfg(feature = "metal-vulkan")]
 pub type NativeService = Service<NativeBackend, AirCompiler>;
@@ -262,8 +288,32 @@ pub unsafe fn open(
     epoch: DeviceEpoch,
 ) -> Result<NativeService, OpenError> {
     // SAFETY: the caller's guarantees.
-    let (backend, compiler) = unsafe { stack(loader, gpu.pci, exporter, compiler) }?;
+    let (mut backend, compiler) = unsafe { stack(loader, gpu.pci, exporter, compiler) }?;
     (loader.log)(&describe(backend.physical_device()));
+    if loader.keep_lost {
+        let failed = match first_submission(&mut backend) {
+            Ok(true) => {
+                (loader.log)("first submission signaled");
+                None
+            }
+            Ok(false) => {
+                (loader.log)("first submission did not signal within 2 s");
+                Some(Error::Unsupported(
+                    "a GPU whose first submission never signaled",
+                ))
+            }
+            Err(error) => {
+                (loader.log)(&format!("first submission failed: {error:?}"));
+                Some(error)
+            }
+        };
+        if let Some(error) = failed {
+            // A GPU whose first work hung is one its kernel driver resets,
+            // and releasing the device would wait for that reset's end.
+            core::mem::forget(backend);
+            return Err(error.into());
+        }
+    }
     serve(backend, compiler, gpu, epoch)
 }
 
@@ -458,5 +508,14 @@ mod tests {
             "VULKAN DEVICE \"AMD Radeon RX 6800 XT (RADV NAVI21)\" 1002:73bf MesaRadv DiscreteGpu"
         ));
         assert!(line.contains(" heaps: "));
+    }
+
+    #[test]
+    fn a_first_submission_that_never_signals_keeps_its_semaphore() {
+        // The mock completes nothing on its own, as a hung GPU.
+        let mut backend = MockBackend::new();
+        assert_eq!(first_submission(&mut backend), Ok(false));
+        assert!(backend.freed_semaphores.is_empty());
+        assert_eq!(backend.semaphores.len(), 1);
     }
 }

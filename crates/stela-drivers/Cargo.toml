@@ -23,6 +23,7 @@ amdgpu-port = ["stela-driver-gpu/amdgpu-port"]
 metal = ["stela-driver-gpu/metal"]
 metal-vulkan = ["stela-driver-gpu/metal-vulkan"]
 metal-linked = ["stela-driver-gpu/metal-linked"]
+nvk = ["stela-driver-gpu/nvk"]
 
 [dependencies]
 stela-driver-audio = { path = "../stela-driver-audio" }

@@ -18,6 +18,12 @@ pub type Control<'a> = &'a mut dyn FnMut(u32, *mut c_void) -> i32;
 pub struct Kernel {
     /// The name its `pci_driver` registers under.
     pub driver: &'static str,
+    /// The memory BAR whose first page holds the GPU's registers.
+    pub registers: usize,
+    /// Whether a GPU is worth claiming for this driver in an image that
+    /// links none of the stack's Vulkan driver: amdgpu brings the GPU up
+    /// without Metal, while nouveau's GPUs serve only the Metal device.
+    pub serves_without_vulkan: bool,
     /// The address bits of the widest DMA mask the driver sets on the devices
     /// Stela drives; a mapping past it is refused, not truncated.
     pub dma_bits: u8,
@@ -34,10 +40,12 @@ pub struct GpuStack {
     /// Admission of the stack's Vulkan device as a Metal device.
     #[cfg(feature = "metal")]
     pub metal: crate::metal::open::Admission,
-    /// The Vulkan driver linked into the image. This crate's own test
-    /// binary links no driver archive, so it holds none.
+    /// The stack's Vulkan driver, when it is the one the image links: an
+    /// image links one Mesa driver, whose runtime and the AIR compiler's
+    /// units the others share. This crate's own test binary links no driver
+    /// archive, so it holds none.
     #[cfg(all(feature = "metal-linked", not(test)))]
-    pub vulkan: crate::metal::native::Driver,
+    pub vulkan: Option<crate::metal::native::Driver>,
 }
 
 impl Kernel {
@@ -55,6 +63,8 @@ pub static NVIDIA: GpuStack = GpuStack {
     vendor: Vendor::Nvidia,
     kernel: Kernel {
         driver: "nouveau",
+        registers: 0,
+        serves_without_vulkan: false,
         // The Turing-and-later MMUs' `dma_bits` (`nvkm/subdev/mmu/tu102.c`
         // 47, `gh100.c` 52), which `nvkm_device_pci_new` sets as the mask.
         dma_bits: 47,
@@ -65,6 +75,26 @@ pub static NVIDIA: GpuStack = GpuStack {
     metal: crate::metal::nvidia::ADMISSION,
     #[cfg(all(feature = "metal-linked", not(test)))]
     vulkan: crate::metal::nvidia::DRIVER,
+};
+
+/// amdgpu, with RADV and ACO over it for Metal.
+pub static AMD: GpuStack = GpuStack {
+    vendor: Vendor::Amd,
+    kernel: Kernel {
+        driver: "amdgpu",
+        // From Bonaire on (`amdgpu_device_init`).
+        registers: 5,
+        serves_without_vulkan: true,
+        // GMC 10 and later set 44 bits (`gmc_v10_0_sw_init`,
+        // `gmc_v11_0_sw_init`, `gmc_v12_0_sw_init`).
+        dma_bits: 44,
+        chip: crate::amdgpu_chip::query::graphics_core,
+        memory_bytes: crate::amdgpu_chip::query::memory_bytes,
+    },
+    #[cfg(feature = "metal")]
+    metal: crate::metal::amd::ADMISSION,
+    #[cfg(all(feature = "metal-linked", not(test)))]
+    vulkan: None,
 };
 
 /// Brings Linux up and registers every kernel driver built into the image,
@@ -82,6 +112,14 @@ pub unsafe fn start_kernel() -> Result<(), stela_linux::owner::Errno> {
 }
 
 impl GpuStack {
+    /// Whether the image links the stack's Vulkan driver.
+    pub fn links_vulkan(&self) -> bool {
+        #[cfg(all(feature = "metal-linked", not(test)))]
+        return self.vulkan.is_some();
+        #[cfg(not(all(feature = "metal-linked", not(test))))]
+        false
+    }
+
     /// The stack for `adapter`'s vendor, or why Stela has none.
     pub fn select(adapter: &Adapter) -> Result<&'static GpuStack, &'static str> {
         STACKS
@@ -161,5 +199,42 @@ mod tests {
         assert_eq!((NVIDIA.kernel.memory_bytes)(&mut refuse), None);
         let mut empty = |_: u32, _: *mut c_void| 0;
         assert_eq!((NVIDIA.kernel.memory_bytes)(&mut empty), None);
+    }
+
+    #[test]
+    fn amdgpu_queries_ask_its_info_and_keep_refusals() {
+        // `struct drm_amdgpu_info`: the answer's address and size, then the
+        // query.
+        let mut asked = alloc::vec::Vec::new();
+        let mut answer = |request: u32, argument: *mut c_void| {
+            // SAFETY: the query passes its own record.
+            let (pointer, size, query) = unsafe {
+                let words = &*argument.cast::<[u32; 4]>();
+                (
+                    u64::from(words[0]) | u64::from(words[1]) << 32,
+                    words[2],
+                    words[3],
+                )
+            };
+            asked.push((request, query, size));
+            // SAFETY: the kernel writes the answer the query sized.
+            let answer = unsafe { core::slice::from_raw_parts_mut(pointer as *mut u32, 8) };
+            match query {
+                // `ip_discovery_version` of `drm_amdgpu_info_hw_ip`.
+                0x02 => answer[7] = 0x000a_0300,
+                // `vram_size` of `drm_amdgpu_info_vram_gtt`.
+                _ => answer[..2].copy_from_slice(&[0, 16]),
+            }
+            0
+        };
+        assert_eq!((AMD.kernel.chip)(&mut answer), Some(0x000a_0300));
+        assert_eq!((AMD.kernel.memory_bytes)(&mut answer), Some(16 << 32));
+        assert_eq!(asked, [(0x4020_6445, 0x02, 32), (0x4020_6445, 0x14, 24)]);
+        let mut refuse = |_: u32, _: *mut c_void| -22;
+        assert_eq!((AMD.kernel.chip)(&mut refuse), None);
+        assert_eq!((AMD.kernel.memory_bytes)(&mut refuse), None);
+        let mut empty = |_: u32, _: *mut c_void| 0;
+        assert_eq!((AMD.kernel.chip)(&mut empty), None);
+        assert_eq!((AMD.kernel.memory_bytes)(&mut empty), None);
     }
 }

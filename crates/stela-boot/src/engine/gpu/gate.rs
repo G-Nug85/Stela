@@ -28,7 +28,7 @@ use stela_drivers::gpu::metal::{
     deferred::{busy_pause_after_slice, busy_pause_millis},
     device::{lifecycle::QuiesceStatus, pass_times},
     error::Error,
-    native::{self, ExportedMemory, Loader, MemoryExporter, NativeBackend, pipeline_store},
+    native::{self, Driver, ExportedMemory, Loader, MemoryExporter, NativeBackend, pipeline_store},
     open::{Attachment, Gpu, OpenError, open, reopen},
     service::{JobSlice, Served, ServiceHost, SharedService, identity::DeviceEpoch, wire::Status},
     timing::{ExitWatch, Totals},
@@ -1083,8 +1083,8 @@ impl MemoryExporter for Exporter {
     }
 }
 
-fn service(gpu: &Gpu, stack: u64) -> Result<Arc<Shared>, OpenError> {
-    let driver = &gpu.stack.vulkan;
+/// The service of `gpu` over `driver`, its stack's Vulkan driver.
+fn service(gpu: &Gpu, driver: &'static Driver, stack: u64) -> Result<Arc<Shared>, OpenError> {
     let compiler = |physical| {
         // SAFETY: the driver's own physical device, whose options last as long.
         let options = unsafe { (driver.nir_options)(physical) };
@@ -1165,6 +1165,9 @@ fn open_gpu(
         crate::output::arguments(format_args!("GPU {}: {reason}\n", bound.name));
         None
     };
+    let Some(driver) = bound.stack.vulkan.as_ref() else {
+        return refuse("this image links no Vulkan driver for it");
+    };
     let Some(link) = bound.link else {
         return refuse("no PCIe link");
     };
@@ -1197,7 +1200,7 @@ fn open_gpu(
     let mut opened = None;
     run(top, &mut || {
         construct(constructed);
-        opened = Some(service(&target, top));
+        opened = Some(service(&target, driver, top));
     });
     match opened? {
         Ok(service) => {

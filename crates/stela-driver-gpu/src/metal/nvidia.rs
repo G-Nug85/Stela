@@ -111,8 +111,8 @@ fn admit(
 
 /// NVK as linked into the image, with its driver-internal calls
 /// (`compat/mesa/nir_options.c`, `compat/mesa/submit_thread.c`).
-#[cfg(all(feature = "metal-linked", not(test)))]
-pub const DRIVER: super::native::Driver = {
+#[cfg(all(feature = "nvk", not(test)))]
+pub const DRIVER: Option<super::native::Driver> = Some({
     use super::native::{Driver, Refusals, vk};
     use core::ffi::{c_char, c_void};
     unsafe extern "system" {
@@ -144,7 +144,11 @@ pub const DRIVER: super::native::Driver = {
             count: stela_nvk_count_failures,
         }),
     }
-};
+});
+
+/// No NVK in an image that links another Vulkan driver.
+#[cfg(all(feature = "metal-linked", not(feature = "nvk"), not(test)))]
+pub const DRIVER: Option<super::native::Driver> = None;
 
 #[cfg(test)]
 pub(crate) mod fixture;

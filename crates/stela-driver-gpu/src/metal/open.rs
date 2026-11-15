@@ -11,6 +11,7 @@ use crate::metal::{
 };
 use crate::{
     metal::{
+        amd,
         capabilities::Platform,
         device::Device,
         error::Error,
@@ -84,6 +85,7 @@ pub struct Admission {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Refusal {
     Nvidia(nvidia::Refusal),
+    Amd(amd::Refusal),
 }
 
 /// The GPU the platform hands the Metal device.
@@ -248,11 +250,12 @@ pub unsafe fn reopen(
 mod tests {
     use super::*;
     use crate::metal::{
+        amd::GcVersion,
         device::fixture::{MockBackend, MockCompiler},
         nvidia::CHIPS,
-        vulkan::DriverId,
+        vulkan::{DriverId, PhysicalDeviceType},
     };
-    use crate::stack::NVIDIA;
+    use crate::stack::{AMD, NVIDIA};
     use core::num::NonZeroU64;
 
     fn gpu(chipset: u16) -> Gpu {
@@ -317,6 +320,91 @@ mod tests {
             Some(OpenError::Refused(Refusal::Nvidia(
                 nvidia::Refusal::NotNvk(DriverId::MesaRadv)
             )))
+        );
+    }
+
+    /// GC 10.3.0, as amdgpu packs it in `ip_discovery_version`.
+    const NAVI21: u32 = 0x000a_0300;
+    const AMD_PCI: PciBusInfo = PciBusInfo {
+        domain: 0,
+        bus: 3,
+        device: 0,
+        function: 0,
+    };
+
+    fn amd_gpu(chip: u32) -> Gpu {
+        Gpu {
+            stack: &AMD,
+            pci: AMD_PCI,
+            chip,
+            attachment: Attachment {
+                link: PcieLink {
+                    speed: 4,
+                    width: 16,
+                },
+                external: false,
+                location_number: 0,
+            },
+        }
+    }
+
+    /// The fixture's device, as RADV names an RX 6800 XT. Its limits and
+    /// features stay the fixture's: admission reads only the identity.
+    fn radv() -> MockBackend {
+        let mut backend = MockBackend::new();
+        let identity = &mut backend.physical.as_mut().unwrap().identity;
+        identity.vendor_id = amd::VENDOR_ID;
+        identity.device_id = 0x73bf;
+        identity.driver_id = DriverId::MesaRadv;
+        identity.device_type = PhysicalDeviceType::DiscreteGpu;
+        identity.device_name = "AMD Radeon RX 6800 XT (RADV NAVI21)".into();
+        identity.pci_bus = Some(AMD_PCI);
+        backend
+    }
+
+    #[test]
+    fn an_rx_6800_xt_is_served_in_its_slot() {
+        let mut service = serve_on(radv(), &amd_gpu(NAVI21)).unwrap();
+        let capabilities = service.device().capabilities();
+        assert_eq!(capabilities.architecture, "Navi 21");
+        assert!(!capabilities.removable);
+        assert_eq!(capabilities.location_number, 0);
+        // PCIe 4.0 x16.
+        assert_eq!(capabilities.max_transfer_rate, 31_506_000_000);
+    }
+
+    #[test]
+    fn other_amd_cores_and_drivers_are_refused() {
+        // An RX 5700 (Navi 10) has neither mesh shaders nor barycentrics.
+        let navi10 = GcVersion::new(10, 1, 10);
+        assert_eq!(
+            serve_on(radv(), &amd_gpu(0x000a_010a)).err(),
+            Some(OpenError::Refused(Refusal::Amd(
+                amd::Refusal::BeforeRdna2 { gc: navi10 }
+            )))
+        );
+        let mut nvk = radv();
+        nvk.physical.as_mut().unwrap().identity.driver_id = DriverId::MesaNvk;
+        assert_eq!(
+            serve_on(nvk, &amd_gpu(NAVI21)).err(),
+            Some(OpenError::Refused(Refusal::Amd(amd::Refusal::NotRadv(
+                DriverId::MesaNvk
+            ))))
+        );
+        let mut nvidia = radv();
+        nvidia.physical.as_mut().unwrap().identity.vendor_id = nvidia::VENDOR_ID;
+        assert_eq!(
+            serve_on(nvidia, &amd_gpu(NAVI21)).err(),
+            Some(OpenError::Refused(Refusal::Amd(amd::Refusal::NotAmd {
+                vendor_id: nvidia::VENDOR_ID
+            })))
+        );
+        // Raphael is an APU: RADV reporting it discrete disagrees with amdgpu.
+        assert_eq!(
+            serve_on(radv(), &amd_gpu(0x000a_0306)).err(),
+            Some(OpenError::Refused(Refusal::Amd(amd::Refusal::Placement {
+                reported: PhysicalDeviceType::DiscreteGpu
+            })))
         );
     }
 }

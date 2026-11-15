@@ -198,7 +198,14 @@ pub fn first_submission<B: Backend>(backend: &mut B) -> Result<bool, Error> {
     };
     let signaled = backend
         .submit(core::slice::from_ref(&segment))
-        .and_then(|()| backend.wait_semaphore(semaphore, 1, FIRST_SUBMISSION_NS));
+        .and_then(|()| backend.wait_semaphore(semaphore, 1, FIRST_SUBMISSION_NS))
+        // A submission the kernel driver refused still signals, on the
+        // driver's submit thread after the call returned: its failure is
+        // taken by the signal.
+        .and_then(|signaled| match signaled {
+            true => backend.submit_failure(semaphore, 1).map_or(Ok(true), Err),
+            false => Ok(false),
+        });
     // A semaphore whose signal never came stays, as the GPU may yet write it.
     if matches!(signaled, Ok(true)) {
         backend.destroy(Object::Semaphore(semaphore));

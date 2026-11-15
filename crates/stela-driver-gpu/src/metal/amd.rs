@@ -147,8 +147,7 @@ fn admit(
 
 /// RADV as linked into the image, with its driver-internal calls
 /// (`compat/mesa/radv_nir_options.c`, `compat/mesa/radv_submit.c`). A
-/// commit's submission runs on its PE, whose ioctls wait for the boot CPU.
-/// A submission amdgpu refuses short of losing the context fails its command
+/// submission amdgpu refuses short of losing the context fails its command
 /// buffer, not the device (Mesa patch 0037); a lost context loses the
 /// device, which the service reopens.
 #[cfg(all(feature = "radv", not(test)))]
@@ -163,6 +162,7 @@ pub const DRIVER: Option<super::native::Driver> = Some({
     }
     unsafe extern "C" {
         fn stela_radv_nir_options(physical: vk::PhysicalDevice) -> *const c_void;
+        fn stela_radv_submit_thread(queue: vk::Queue) -> vk::Result;
         fn stela_radv_submit_failure(
             queue: vk::Queue,
             semaphore: vk::Semaphore,
@@ -174,7 +174,8 @@ pub const DRIVER: Option<super::native::Driver> = Some({
     Driver {
         get_instance_proc_addr: vk_icdGetInstanceProcAddr,
         nir_options: stela_radv_nir_options,
-        submit_thread: None,
+        // A commit's submission runs where Linux does, not on its PE.
+        submit_thread: Some(stela_radv_submit_thread),
         // A refused submission fails its command buffer, not the device.
         refusals: Some(Refusals {
             take: stela_radv_submit_failure,

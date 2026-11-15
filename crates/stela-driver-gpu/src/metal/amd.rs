@@ -146,13 +146,14 @@ fn admit(
 }
 
 /// RADV as linked into the image, with its driver-internal calls
-/// (`compat/mesa/radv_nir_options.c`). It has neither of NVK's hooks yet: a
-/// commit's submission runs on its PE, whose ioctls wait for the boot CPU,
-/// and a submission amdgpu refuses loses the device, which the service
-/// reopens.
+/// (`compat/mesa/radv_nir_options.c`, `compat/mesa/radv_submit.c`). A
+/// commit's submission runs on its PE, whose ioctls wait for the boot CPU.
+/// A submission amdgpu refuses short of losing the context fails its command
+/// buffer, not the device (Mesa patch 0037); a lost context loses the
+/// device, which the service reopens.
 #[cfg(all(feature = "radv", not(test)))]
 pub const DRIVER: Option<super::native::Driver> = Some({
-    use super::native::{Driver, vk};
+    use super::native::{Driver, Refusals, vk};
     use core::ffi::{c_char, c_void};
     unsafe extern "system" {
         fn vk_icdGetInstanceProcAddr(
@@ -162,12 +163,24 @@ pub const DRIVER: Option<super::native::Driver> = Some({
     }
     unsafe extern "C" {
         fn stela_radv_nir_options(physical: vk::PhysicalDevice) -> *const c_void;
+        fn stela_radv_submit_failure(
+            queue: vk::Queue,
+            semaphore: vk::Semaphore,
+            value: u64,
+        ) -> vk::Result;
+        fn stela_radv_forget_failures(queue: vk::Queue) -> u32;
+        fn stela_radv_count_failures(queue: vk::Queue, outstanding: *mut u32);
     }
     Driver {
         get_instance_proc_addr: vk_icdGetInstanceProcAddr,
         nir_options: stela_radv_nir_options,
         submit_thread: None,
-        refusals: None,
+        // A refused submission fails its command buffer, not the device.
+        refusals: Some(Refusals {
+            take: stela_radv_submit_failure,
+            forget: stela_radv_forget_failures,
+            count: stela_radv_count_failures,
+        }),
         // amdgpu's recovery from a hung GPU holds back the VM work closing
         // RADV's file waits for.
         keep_lost: true,

@@ -104,6 +104,10 @@ const COST_SHARE: u64 = 32;
 const SLOW_MILLIS: u64 = 250;
 /// The longest an active device waits for its next poll.
 const ACTIVE_MILLIS: u64 = 32;
+/// How long no host device may give input before the next input is logged
+/// as `INPUT ACTIVE`: the moments a person starts typing or pointing, which
+/// boot and launch timelines take apart from the time spent waiting on them.
+const ACTIVITY_GAP_SECONDS: u64 = 2;
 
 pub struct HostInput {
     inputs: Inputs,
@@ -121,6 +125,8 @@ pub struct HostInput {
     held: HeldInputs,
     /// The next device's identity.
     next_id: u64,
+    /// The counter when any device last gave input, if one has.
+    last_input: Option<u64>,
 }
 
 impl HostInput {
@@ -148,6 +154,7 @@ impl HostInput {
             wanted_leds: None,
             reported_times: 0,
             held: HeldInputs::new(),
+            last_input: None,
         }
     }
 
@@ -286,6 +293,22 @@ impl HostInput {
             reported.looked = now;
             if pending.len() != before {
                 reported.active = now;
+                // `INPUT ACTIVE name idle_ms=…|first`: the first input after
+                // a gap. Which keys or motions it was is not logged.
+                let idle = self.last_input.map(|last| now.wrapping_sub(last));
+                if idle.is_none_or(|idle| idle >= super::host::COUNTER_HZ * ACTIVITY_GAP_SECONDS) {
+                    let name = device.name().replace(' ', "_");
+                    match idle {
+                        Some(idle) => output::arguments(format_args!(
+                            "INPUT ACTIVE {name} idle_ms={}\n",
+                            idle / millis
+                        )),
+                        None => {
+                            output::arguments(format_args!("INPUT ACTIVE {name} idle_ms=first\n"))
+                        }
+                    }
+                }
+                self.last_input = Some(now);
             }
             if let Err(error) = polled
                 && !core::mem::replace(&mut reported.failed, true)

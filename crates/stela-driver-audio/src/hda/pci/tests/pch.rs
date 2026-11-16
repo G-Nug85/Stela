@@ -42,6 +42,77 @@ fn hsw_bdw_snoop_preserves_status() {
     }
 }
 
+/// The 800 series' ACE (8086:7f50) as an ASUS board's reads: PM50 -> Intel
+/// vendor-specific c0 -> MSI60, no PCIe capability and DEVC78 in the
+/// controller's own registers. The snoop control is written there, as Linux
+/// writes INTEL_SCH_HDA_DEVC, and only when no-snoop is set.
+#[test]
+fn a_pch_without_a_pcie_capability_owns_its_snoop_register() {
+    let ace = |layout: &dyn Fn(&mut Model)| {
+        let (mut function, timer, bar) = modern_pci_model_for(0x7f50);
+        layout(function.config());
+        // SAFETY: The PCI function and mapped byte vector are owned by this
+        // test; no firmware or background DMA can race them.
+        let attached = unsafe {
+            prepare_with_registers(
+                &mut function,
+                bar,
+                &timer,
+                Ownership::ExclusiveLegacy,
+                MappedModel::new(),
+            )
+        }
+        .map(drop);
+        (function, attached)
+    };
+    for no_snoop in [false, true] {
+        let (mut function, attached) = ace(&|config: &mut Model| {
+            config.words[20] = 0x0003_c001; // PMv3 -> vendor-specific c0.
+            config.words[48] = 0xf014_6009; // Vendor-specific, 20 bytes -> MSI60.
+            config.words[24] = 0x0001_0005; // Enabled MSI, last.
+            config.words[28] = 0;
+            config.words[44] = 0;
+            config.words[30] = if no_snoop { 0x0800 } else { 0 };
+        });
+        assert_eq!(attached, Ok(()));
+        let written: Vec<_> = function
+            .config()
+            .writes
+            .iter()
+            .filter(|(offset, _, _, _)| *offset == SCH_HDA_DEVC)
+            .map(|(_, width, value, _)| (*width, *value))
+            .collect();
+        assert_eq!(written, if no_snoop { vec![(2, 0)] } else { vec![] });
+        assert_eq!(function.config().get16(SCH_HDA_DEVC), 0);
+    }
+    // On a PCH without the clock-gate bracket, which refuses such a body
+    // first: no PCIe capability owns DEVC78 either way, and a capability of
+    // unknown extent before it may hold it in its body.
+    for unknown_at_70 in [false, true] {
+        let (mut function, timer, bar) = pch_fixture(0x8c20, 2, 9);
+        let config = function.config();
+        config.words[24] = if unknown_at_70 {
+            0x0001_7005
+        } else {
+            0x0001_0005
+        };
+        config.words[28] = if unknown_at_70 { 0xfe } else { 0 };
+        config.words[44] = 0;
+        let attached = prepare_model(&mut function, &timer, bar).map(drop);
+        if unknown_at_70 {
+            assert_eq!(
+                attached,
+                Err(AttachError::InvalidCapabilities(
+                    CapabilityRefusal::PcieOwnerMissing { found: None }
+                ))
+            );
+            assert!(function.config().writes.is_empty());
+        } else {
+            assert_eq!(attached, Ok(()));
+        }
+    }
+}
+
 #[test]
 fn legacy_snoop_uses_global_tags() {
     for device in [

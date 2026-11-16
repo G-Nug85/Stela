@@ -259,7 +259,8 @@ pub enum CapabilityRefusal {
     /// Capability `id` appears again at `offset`.
     Duplicate { offset: u16, id: u8 },
     /// The PCH snoop control needs the endpoint's PCIe capability ending
-    /// at Device Control; the PCIe capability found, if any.
+    /// at Device Control, or no PCIe capability and no unknown one that
+    /// may reach it; the PCIe capability found, if any.
     PcieOwnerMissing { found: Option<u16> },
     /// Power management moved to `found` since preparation.
     PowerManagementMoved { found: Option<u16> },
@@ -504,6 +505,9 @@ fn capabilities<C: ConfigSpace>(
     }
     // Capability bodies and controls are checked separately so the one owned
     // PCIe Device Control field is allowed without allowing body/body aliases.
+    // An unknown capability at or before DEVC78 may hold it in a body whose
+    // end the walk cannot know.
+    let mut unknown_reaches_devc = false;
     for entry in config.capabilities() {
         let entry = entry?;
         let (offset16, id) = (entry.offset, entry.id);
@@ -527,7 +531,10 @@ fn capabilities<C: ConfigSpace>(
                 Some(&mut found.pcie)
             }
             // Unknown bodies are not touched; the walk reserves their headers.
-            _ => None,
+            _ => {
+                unknown_reaches_devc |= offset16 <= SCH_HDA_DEVC;
+                None
+            }
         };
         let start = usize::from(offset16);
         let end = start + usize::from(entry.bytes);
@@ -565,9 +572,18 @@ fn capabilities<C: ConfigSpace>(
             *slot = Some(offset16);
         }
     }
-    // PCH78 is Device Control, so require its known endpoint owner.
-    // Missing/unknown capabilities do not authorize writing an ambiguous body.
-    if controls.contains(&PCH_SNOOP) && found.pcie != Some(SCH_HDA_DEVC - 8) {
+    // PCH78 is Device Control when a PCIe capability holds it, so require its
+    // known endpoint owner then. A PCH with no PCIe capability, as the 800
+    // series' ACE (PM50 -> vendor c0 -> MSI60), keeps DEVC78 in its own
+    // register space, which Linux writes as INTEL_SCH_HDA_DEVC with no
+    // capability check: no capability body reaches it (checked above) and
+    // none of unknown extent starts before it. A PCIe capability elsewhere,
+    // or an unknown one before DEVC78, leaves the field ambiguous.
+    let owned = match found.pcie {
+        Some(offset) => offset == SCH_HDA_DEVC - 8,
+        None => !unknown_reaches_devc,
+    };
+    if controls.contains(&PCH_SNOOP) && !owned {
         return refuse(CapabilityRefusal::PcieOwnerMissing { found: found.pcie });
     }
     Ok(found)

@@ -85,4 +85,35 @@ void stela_linux_i2c_test(void)
 	assert(kref_read(&managed.dev.kobj.kref) == 1);
 	stela_linux_devres_release(&parent);
 	assert(!kref_read(&managed.dev.kobj.kref));
+
+	/* An adapter with stated limits is added, and a transfer past them is
+	 * refused before the adapter sees it, as amdgpu's SMU adapter on a
+	 * Navi 48 states them. */
+	static const struct i2c_adapter_quirks limits = {
+		.flags = I2C_AQ_COMB | I2C_AQ_COMB_WRITE_FIRST | I2C_AQ_COMB_SAME_ADDR,
+		.max_read_len = 4,
+		.max_write_len = 4,
+		.max_comb_1st_msg_len = 2,
+		.max_comb_2nd_msg_len = 4,
+	};
+	static struct i2c_adapter limited = {.algo = &algorithm, .quirks = &limits, .name = "limited"};
+	u8 data[8] = {0};
+	struct i2c_msg one = {.addr = 0x50, .len = 4, .buf = data};
+	struct i2c_msg too_long = {.addr = 0x50, .len = 8, .buf = data};
+	struct i2c_msg pair[2] = {{.addr = 0x50, .len = 2, .buf = data},
+				  {.addr = 0x50, .flags = I2C_M_RD, .len = 4, .buf = data}};
+	struct i2c_msg read_first[2] = {{.addr = 0x50, .flags = I2C_M_RD, .len = 2, .buf = data},
+					{.addr = 0x50, .len = 2, .buf = data}};
+	assert(!i2c_add_adapter(&limited));
+	transfers = 0;
+	results[0] = 1;
+	assert(i2c_transfer(&limited, &one, 1) == 1 && transfers == 1);
+	transfers = 0;
+	assert(i2c_transfer(&limited, &too_long, 1) == -EOPNOTSUPP && transfers == 0);
+	results[0] = 2;
+	assert(i2c_transfer(&limited, pair, 2) == 2 && transfers == 1);
+	transfers = 0;
+	assert(i2c_transfer(&limited, read_first, 2) == -EOPNOTSUPP && transfers == 0);
+	assert(i2c_transfer(&limited, pair, 3) == -EOPNOTSUPP && transfers == 0);
+	i2c_del_adapter(&limited);
 }

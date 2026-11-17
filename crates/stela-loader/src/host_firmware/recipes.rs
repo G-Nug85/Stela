@@ -5,6 +5,9 @@ use super::{
     requirements::{Inventory, Request, read_by_boot},
 };
 use alloc::{format, vec::Vec};
+
+mod amdgpu_chips;
+pub use amdgpu_chips::*;
 use stela_driver_core::firmware::{Requirement, Target};
 
 pub const LINUX_FIRMWARE: &str = "https://gitlab.com/kernel-firmware/linux-firmware";
@@ -1176,9 +1179,17 @@ const AMDGPU_TARGET: Target<'static> = Target {
 };
 
 /// The chip of an AMD GPU with PCI device ID `device` that Stela's amdgpu
-/// runs, by AMD's name for it: Navi 48, the Radeon RX 9070 and 9070 XT,
-/// whose 1002:7550 is the one checked on hardware. Navi 48's 1002:7551
-/// boards would need the kicker images.
+/// runs, by AMD's name for it: the graphics cores from RDNA 2 that Stela's
+/// Metal device admits (`stela_driver_gpu::amdgpu_chip::CHIPS`).
+/// Checked on hardware: Navi 48, the Radeon RX 9070 and 9070 XT, whose
+/// 1002:7550 is the one checked, and Navi 21's RX 6800 XT, 1002:73BF.
+/// Navi 48's 1002:7551 boards would need the kicker images.
+///
+/// The chips amdgpu's PCI ID table names (CHIP_SIENNA_CICHLID,
+/// CHIP_NAVY_FLOUNDER, CHIP_DIMGREY_CAVEFISH, CHIP_BEIGE_GOBY and
+/// CHIP_YELLOW_CARP) take its IDs. The rest bind by class and are named by
+/// their IP discovery tables, so their IDs are pci.ids' for each chip's
+/// physical functions.
 pub fn amd_chip(device: u16) -> Option<&'static str> {
     match device {
         0x7550 => Some("navi48"),
@@ -1187,18 +1198,74 @@ pub fn amd_chip(device: u16) -> Option<&'static str> {
         // table lists them under CHIP_SIENNA_CICHLID. 1002:73BF is the RX 6800
         // XT this port is checked on.
         0x73A0..=0x73AF | 0x73BF => Some("navi21"),
+        0x73C0 | 0x73C1 | 0x73C3 | 0x73DA..=0x73DF => Some("navi22"),
+        0x73E0..=0x73E3 | 0x73E8..=0x73ED | 0x73EF | 0x73FF => Some("navi23"),
+        0x7420..=0x7424 | 0x743F => Some("navi24"),
+        0x163F => Some("vangogh"),
+        0x164D | 0x1681 => Some("rembrandt"),
+        0x164E => Some("raphael"),
+        0x1506 => Some("mendocino"),
+        0x7448..=0x744C | 0x745E => Some("navi31"),
+        0x15BF | 0x164F => Some("phoenix"),
+        0x73F0 | 0x7480 | 0x7481 | 0x7483 | 0x7487 | 0x7489 | 0x748B | 0x7499 | 0x749F => {
+            Some("navi33")
+        }
+        0x7460 | 0x7461 | 0x7470 | 0x747E => Some("navi32"),
+        0x15C8 => Some("phoenix2"),
+        0x150E => Some("strix-point"),
+        0x1586 => Some("strix-halo"),
+        0x1114 => Some("krackan"),
+        0x7590 => Some("navi44"),
         _ => None,
     }
 }
 
 /// The recipes amdgpu reads on `chip`, named as [`amd_chip`] names chips.
 pub fn amdgpu_recipes(chip: &str) -> Option<&'static [Recipe]> {
-    match chip {
-        "navi48" => Some(AMDGPU),
-        "navi21" => Some(AMDGPU_NAVI21),
-        _ => None,
-    }
+    AMDGPU_CHIPS
+        .iter()
+        .find(|(name, _)| *name == chip)
+        .map(|(_, recipes)| *recipes)
 }
+
+/// Whether [`amd_chip`]'s `chip` is an APU's graphics core, which shares
+/// the processor's memory and usually drives its built-in screen.
+pub fn amd_integrated(chip: &str) -> bool {
+    matches!(
+        chip,
+        "vangogh"
+            | "rembrandt"
+            | "raphael"
+            | "mendocino"
+            | "phoenix"
+            | "phoenix2"
+            | "strix-point"
+            | "strix-halo"
+            | "krackan"
+    )
+}
+
+/// Every chip's recipes, by [`amd_chip`]'s name.
+pub const AMDGPU_CHIPS: &[(&str, &[Recipe])] = &[
+    ("navi48", AMDGPU),
+    ("navi21", AMDGPU_NAVI21),
+    ("navi22", AMDGPU_NAVI22),
+    ("navi23", AMDGPU_NAVI23),
+    ("navi24", AMDGPU_NAVI24),
+    ("vangogh", AMDGPU_VANGOGH),
+    ("rembrandt", AMDGPU_REMBRANDT),
+    ("raphael", AMDGPU_RAPHAEL),
+    ("mendocino", AMDGPU_MENDOCINO),
+    ("navi31", AMDGPU_NAVI31),
+    ("phoenix", AMDGPU_PHOENIX),
+    ("navi33", AMDGPU_NAVI33),
+    ("navi32", AMDGPU_NAVI32),
+    ("phoenix2", AMDGPU_PHOENIX2),
+    ("strix-point", AMDGPU_STRIX_POINT),
+    ("strix-halo", AMDGPU_STRIX_HALO),
+    ("krackan", AMDGPU_KRACKAN),
+    ("navi44", AMDGPU_NAVI44),
+];
 
 /// Requires the files amdgpu asks for on `chip`, named as [`amd_chip`] names
 /// chips.
@@ -1224,9 +1291,9 @@ fn select_amdgpu(request: &Request) -> Option<&'static Recipe> {
     {
         return None;
     }
-    AMDGPU
+    AMDGPU_CHIPS
         .iter()
-        .chain(AMDGPU_NAVI21)
+        .flat_map(|(_, recipes)| recipes.iter())
         .find(|recipe| recipe.image.member == request.name)
 }
 
@@ -1787,9 +1854,12 @@ mod tests {
     #[test]
     fn navi48_requires_every_file_amdgpu_asks_for_and_nothing_else() {
         assert_eq!(amd_chip(0x7550), Some("navi48"));
-        // A Ryzen 7000's integrated Raphael and Navi 44 are not run.
-        assert_eq!(amd_chip(0x164e), None);
-        assert_eq!(amd_chip(0x7590), None);
+        // A Ryzen 7000's integrated Raphael and Navi 44 are other chips', and
+        // a Vega APU's graphics (Cezanne's 1638) is none Stela runs.
+        assert_eq!(amd_chip(0x164e), Some("raphael"));
+        assert!(amd_integrated("raphael") && !amd_integrated("navi44"));
+        assert_eq!(amd_chip(0x7590), Some("navi44"));
+        assert_eq!(amd_chip(0x1638), None);
         let mut inventory = Inventory::default();
         require_amdgpu(&mut inventory, "navi48").unwrap();
         let plan = Plan::select(&inventory).unwrap();
@@ -1803,7 +1873,7 @@ mod tests {
         // One shared notice beside the eleven images.
         assert_eq!(plan.artifacts().len(), AMDGPU.len() + 1);
         let mut other = Inventory::default();
-        assert!(require_amdgpu(&mut other, "navi44").is_err());
+        assert!(require_amdgpu(&mut other, "cezanne").is_err());
         assert!(other.requests().is_empty());
         // The same name under another driver's target is no amdgpu request.
         let request = serde_json::json!({"schema":1,"complete":true,"requirements":[{

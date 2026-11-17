@@ -21,8 +21,9 @@ use stela_driver_core::firmware::{
 pub const DIRECTORY: &str = "stela/firmware";
 /// The bundle's manifest on its volume.
 pub const MANIFEST: &str = "stela/firmware/bundle.json";
-/// At most this many files and as many notices.
-pub const MAX_OBJECTS: usize = 256;
+/// At most this many files and as many notices: room for every chip's files,
+/// which [`MAX_MANIFEST_BYTES`] bounds as well.
+pub const MAX_OBJECTS: usize = 512;
 /// The target a bundle file has in the boot's catalog, under the name
 /// [`name`] gives its digest. Only [`BundleProvider`] asks for it.
 pub const TARGET: driver::Target<'static> = driver::Target {
@@ -34,7 +35,7 @@ pub const TARGET: driver::Target<'static> = driver::Target {
 
 /// Every recipe family, in the order a volume short of room keeps them: the
 /// small network and Bluetooth files first, the GPU's large images last.
-pub const FAMILIES: [(&str, &[Recipe]); 11] = [
+pub const FAMILIES: [(&str, &[Recipe]); 27] = [
     ("Wi-Fi regulatory database", recipes::REGULATORY),
     ("Realtek Ethernet", recipes::REALTEK),
     ("Realtek USB Ethernet", recipes::REALTEK_USB),
@@ -45,6 +46,22 @@ pub const FAMILIES: [(&str, &[Recipe]); 11] = [
     ("Intel Bluetooth", recipes::INTEL_RSA),
     ("AMD amdgpu (Navi 21)", recipes::AMDGPU_NAVI21),
     ("AMD amdgpu", recipes::AMDGPU),
+    ("AMD amdgpu (Navi 22)", recipes::AMDGPU_NAVI22),
+    ("AMD amdgpu (Navi 23)", recipes::AMDGPU_NAVI23),
+    ("AMD amdgpu (Navi 24)", recipes::AMDGPU_NAVI24),
+    ("AMD amdgpu (Van Gogh)", recipes::AMDGPU_VANGOGH),
+    ("AMD amdgpu (Rembrandt)", recipes::AMDGPU_REMBRANDT),
+    ("AMD amdgpu (Raphael)", recipes::AMDGPU_RAPHAEL),
+    ("AMD amdgpu (Mendocino)", recipes::AMDGPU_MENDOCINO),
+    ("AMD amdgpu (Navi 31)", recipes::AMDGPU_NAVI31),
+    ("AMD amdgpu (Phoenix)", recipes::AMDGPU_PHOENIX),
+    ("AMD amdgpu (Navi 33)", recipes::AMDGPU_NAVI33),
+    ("AMD amdgpu (Navi 32)", recipes::AMDGPU_NAVI32),
+    ("AMD amdgpu (Phoenix 2)", recipes::AMDGPU_PHOENIX2),
+    ("AMD amdgpu (Strix Point)", recipes::AMDGPU_STRIX_POINT),
+    ("AMD amdgpu (Strix Halo)", recipes::AMDGPU_STRIX_HALO),
+    ("AMD amdgpu (Krackan Point)", recipes::AMDGPU_KRACKAN),
+    ("AMD amdgpu (Navi 44)", recipes::AMDGPU_NAVI44),
     ("NVIDIA GSP-RM", recipes::GSP),
 ];
 
@@ -348,6 +365,11 @@ impl Selection {
 /// and Ethernet adapters are not on PCI before the boot's own USB stack
 /// runs, so their files, about 2 MB in all, are always selected.
 pub fn select(functions: &[Pci]) -> Selection {
+    let amd_discrete = functions.iter().any(|function| {
+        function.vendor == 0x1002
+            && function.class == 0x03
+            && recipes::amd_chip(function.device).is_some_and(|chip| !recipes::amd_integrated(chip))
+    });
     let mut selection = Selection::default();
     selection.members(recipes::REALTEK_USB, &[], "usb ethernet");
     selection.members(recipes::MEDIATEK_BLUETOOTH, &[], "usb bluetooth");
@@ -368,10 +390,13 @@ pub fn select(functions: &[Pci]) -> Selection {
             }
             continue;
         }
-        // amdgpu runs Navi 48 only; the PC's other AMD display adapters,
-        // such as a Ryzen's integrated GPU, need nothing from the bundle.
+        // amdgpu runs the chips `amd_chip` names; the PC's other AMD display
+        // adapters, such as a Vega APU's, need nothing from the bundle. An
+        // integrated GPU beside a discrete one stays with the firmware, as
+        // the GPU claim leaves it.
         if function.vendor == 0x1002 && function.class == 0x03 {
             if let Some(chip) = recipes::amd_chip(function.device)
+                && !(recipes::amd_integrated(chip) && amd_discrete)
                 && recipes::require_amdgpu(&mut inventory, chip).is_ok()
             {
                 selection.plan(&inventory, &why);

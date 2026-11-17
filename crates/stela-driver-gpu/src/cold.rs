@@ -139,6 +139,8 @@ struct Pending<P, V> {
     views: V,
     timer: Rc<dyn Timer>,
     translated: bool,
+    /// Set by [`Cold::driver_resets`].
+    driver_resets: bool,
 }
 
 /// A single consumed cold attempt. Abandonment retains the actual inputs.
@@ -184,6 +186,7 @@ fn preflight<C: ConfigSpace>(
     timer: &dyn Timer,
     translated: bool,
     bus_reset: bool,
+    driver_resets: bool,
 ) -> Result<Option<Reset>, Error> {
     timer.check().map_err(Error::Clock)?;
     // Which vendor's display function it is, is its stack's selection
@@ -211,9 +214,15 @@ fn preflight<C: ConfigSpace>(
     // reset that is available comes first. Only a GPU with none starts as
     // firmware left it, and only with translation: otherwise an engine
     // firmware left running could write recycled RAM once bus mastering is
-    // on.
+    // on. A driver that resets its GPU itself at its probe takes one with
+    // no function-local reset as firmware left it: amdgpu resets through the
+    // SMU when the security processor still runs from an earlier driver
+    // (`*_need_reset_on_init`) and otherwise starts what firmware started, as
+    // Linux does at every boot, and a Navi 48's link does not come back from
+    // a bus reset. Its Bus Master bit stays clear until the driver sets it.
     match function.reset_method().map_err(Error::Reset)? {
         Some(method) => Ok(Some(Reset::Function(method))),
+        None if driver_resets => Ok(None),
         None if bus_reset => Ok(Some(Reset::SecondaryBus)),
         None if translated => Ok(None),
         None => Err(Error::ResetUnavailable),
@@ -225,13 +234,16 @@ fn preflight<C: ConfigSpace>(
 /// repeats the same checks immediately before its consumed reset attempt.
 /// `translated`: whether an active remapper confines the function's DMA.
 /// `bus_reset`: whether a Secondary Bus Reset of its bus is available.
+/// `driver_resets`: whether its kernel driver resets it at its probe
+/// ([`crate::stack::Kernel::resets_at_probe`]).
 pub fn check_candidate<C: ConfigSpace>(
     function: &mut Function<C>,
     timer: &dyn Timer,
     translated: bool,
     bus_reset: bool,
+    driver_resets: bool,
 ) -> Result<Option<Reset>, Error> {
-    preflight(function, timer, translated, bus_reset)
+    preflight(function, timer, translated, bus_reset, driver_resets)
 }
 impl<P: Preparation, V: Views<P::Config>> Cold<P, V> {
     pub fn new(inputs: Inputs<P, V>) -> Self {
@@ -241,6 +253,7 @@ impl<P: Preparation, V: Views<P::Config>> Cold<P, V> {
                 views: inputs.views,
                 timer: inputs.timer,
                 translated: false,
+                driver_resets: false,
             })),
         }
     }
@@ -256,6 +269,19 @@ impl<P: Preparation, V: Views<P::Config>> Cold<P, V> {
         self
     }
 
+    /// Let a function with no function-local reset start in the state
+    /// firmware left, without a bus reset, for a kernel driver that resets
+    /// it itself at its probe.
+    ///
+    /// # Safety
+    /// The driver's probe resets the GPU when an earlier driver's state
+    /// still runs on it, and sets Bus Master only once its own domain is
+    /// bound, as amdgpu's does.
+    pub unsafe fn driver_resets(mut self) -> Self {
+        self.kept.driver_resets = true;
+        self
+    }
+
     pub fn quiesce_and_bind(mut self) -> Result<Ready<P::Bound, V>, Failure<P, V>> {
         let attempt = &mut **self.kept;
         let requester = attempt.requester.as_mut().expect("original cold requester");
@@ -266,6 +292,7 @@ impl<P: Preparation, V: Views<P::Config>> Cold<P, V> {
                 attempt.timer.as_ref(),
                 attempt.translated,
                 bus_reset,
+                attempt.driver_resets,
             )?;
             attempt
                 .views

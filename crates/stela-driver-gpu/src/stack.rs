@@ -41,6 +41,11 @@ pub struct Kernel {
     pub chip: fn(Control) -> Option<u32>,
     /// The bytes of device memory the driver makes available.
     pub memory_bytes: fn(Control) -> Option<u64>,
+    /// Whether the driver resets the GPU itself at its probe when an earlier
+    /// driver's state still runs on it, and otherwise starts it as firmware
+    /// left it, so the claim makes no bus reset of a GPU without a function
+    /// reset (`cold::Cold::driver_resets`).
+    pub resets_at_probe: bool,
 }
 
 /// One vendor's stack.
@@ -103,6 +108,9 @@ pub static NVIDIA: GpuStack = GpuStack {
         probed_integrated: None,
         chip: crate::nouveau_chip::query::chipset,
         memory_bytes: crate::nouveau_chip::query::memory_bytes,
+        // An earlier run's secure region fails nouveau's FWSEC-FRTS until
+        // the GPU is reset (`cold::preflight`).
+        resets_at_probe: false,
     },
     #[cfg(feature = "metal")]
     metal: Some(crate::metal::nvidia::ADMISSION),
@@ -135,6 +143,9 @@ pub static AMD: GpuStack = GpuStack {
         probed_integrated: Some(crate::amdgpu::query::integrated),
         chip: crate::amdgpu::query::family,
         memory_bytes: crate::amdgpu::query::memory_bytes,
+        // `amdgpu_device_init` asks `amdgpu_asic_need_reset_on_init` and
+        // resets through the SMU when the PSP's secure OS still runs.
+        resets_at_probe: true,
     },
     #[cfg(feature = "metal")]
     metal: Some(crate::metal::amd::ADMISSION),
@@ -178,6 +189,7 @@ pub static INTEL: GpuStack = GpuStack {
         probed_integrated: None,
         chip: crate::xe::query::chip,
         memory_bytes: crate::xe::query::memory_bytes,
+        resets_at_probe: false,
     },
     #[cfg(feature = "metal")]
     metal: Some(crate::metal::intel::ADMISSION),

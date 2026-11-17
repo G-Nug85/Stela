@@ -1106,8 +1106,14 @@ fn claim(
         return Err(ServiceError::Refused("the GPU's original identity changed"));
     }
     let translated = services.dma_translated(address);
-    gpu::cold::check_candidate(function, timer.as_ref(), translated, bus_reset)
-        .map_err(|error| cold_refusal(address, error))?;
+    gpu::cold::check_candidate(
+        function,
+        timer.as_ref(),
+        translated,
+        bus_reset,
+        stack.kernel.resets_at_probe,
+    )
+    .map_err(|error| cold_refusal(address, error))?;
     let owns_screen = match gop {
         ScreenOwner::Function(source) if source.address == address => {
             source.bar.words().try_for_each(|(offset, expected)| {
@@ -1280,6 +1286,12 @@ fn claim(
         // SAFETY: the mount's active remapper translates this requester, and
         // its private domain is the one the cold attempt binds.
         cold = unsafe { cold.translated() };
+    }
+    if stack.kernel.resets_at_probe {
+        // SAFETY: the stack's kernel driver resets the GPU at its probe
+        // when an earlier driver's state runs on it, and sets Bus Master
+        // only once its own domain is bound.
+        cold = unsafe { cold.driver_resets() };
     }
     // The seal and the reset below end the firmware's picture on this GPU.
     screen.spend();

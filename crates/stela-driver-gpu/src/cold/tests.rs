@@ -405,6 +405,7 @@ fn no_reset_starts_unreset_only_when_dma_is_translated() {
             &PhysicalTimer(state.clone()),
             translated,
             false,
+            false,
         );
         let mut cold = Cold::new(inputs);
         if translated {
@@ -442,6 +443,7 @@ fn without_a_function_reset_or_translation_the_bus_is_reset() {
             &PhysicalTimer(state.clone()),
             false,
             true,
+            false,
         );
         assert_eq!(candidate, Ok(Some(Reset::SecondaryBus)));
         let result = Cold::new(inputs).quiesce_and_bind();
@@ -474,6 +476,7 @@ fn a_function_reset_comes_before_the_bus_reset() {
             &PhysicalTimer(state.clone()),
             translated,
             true,
+            false,
         );
         assert_eq!(
             candidate,
@@ -511,6 +514,7 @@ fn a_translated_function_without_a_function_reset_still_gets_the_bus_reset() {
         &PhysicalTimer(state.clone()),
         true,
         true,
+        false,
     );
     assert_eq!(candidate, Ok(Some(Reset::SecondaryBus)));
     // SAFETY: the symbolic domain stands for a translating one.
@@ -628,4 +632,33 @@ fn decode_that_does_not_stick_is_refused() {
         enable_decode(function, &timer),
         Err(DecodeError::Readback { command: 0x0400 })
     );
+}
+
+/// amdgpu resets its GPU itself at its probe, so a GPU without a function
+/// reset starts as firmware left it even where a bus reset is available and
+/// its DMA is not translated: a Navi 48's link does not come back from one.
+#[test]
+fn a_driver_that_resets_at_its_probe_gets_no_bus_reset() {
+    let (mut inputs, state) = inputs();
+    {
+        let words = &mut inputs.requester.function.config().words;
+        words[0x44 / 4] = 0;
+        words[0x84 / 4] = 8;
+    }
+    state.borrow_mut().bus_reset = true;
+    let candidate = check_candidate(
+        &mut inputs.requester.function,
+        &PhysicalTimer(state.clone()),
+        false,
+        true,
+        true,
+    );
+    assert_eq!(candidate, Ok(None));
+    // SAFETY: the symbolic driver resets at its probe.
+    let cold = unsafe { Cold::new(inputs).driver_resets() };
+    let ready = cold
+        .quiesce_and_bind()
+        .unwrap_or_else(|error| panic!("{:?}", error.error));
+    assert_eq!(ready.reset(), None);
+    assert_eq!(state.borrow().events, ["views-seal", "root-drain", "bind"]);
 }

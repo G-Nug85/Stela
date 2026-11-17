@@ -389,6 +389,7 @@ mod tests {
                 probed_integrated: None,
                 chip: crate::xe::query::chip,
                 memory_bytes: crate::xe::query::memory_bytes,
+                resets_at_probe: false,
             },
             metal: Some(intel::ADMISSION),
         };

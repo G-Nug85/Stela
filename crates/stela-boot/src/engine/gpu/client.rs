@@ -1936,18 +1936,59 @@ extern "C" fn stela_libc_drm_seek(fd: c_int, offset: i64, whence: c_int) -> i64 
     submit(Operation::Seek(fd, offset, whence))
 }
 
+/// The first DRM calls and maps Linux refuses a Mesa driver, one line each
+/// up to [`REFUSALS_SHOWN`]: a Vulkan driver turns most refusals into one
+/// generic result (`VK_ERROR_OUT_OF_DEVICE_MEMORY`), so these lines say
+/// which call it was.
+const REFUSALS_SHOWN: u32 = 64;
+static REFUSED_SHOWN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+fn show_refusal(line: core::fmt::Arguments<'_>) {
+    let shown = REFUSED_SHOWN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    if shown < REFUSALS_SHOWN {
+        output::arguments(line);
+    }
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn stela_libc_drm_ioctl(fd: c_int, request: c_ulong, argument: *mut c_void) -> c_int {
-    submit(Operation::Control {
+    // What the caller asked, before the kernel writes its answer over it.
+    let size = ((request >> 16) & 0x3fff) as usize;
+    let mut input = [0u64; 4];
+    if !argument.is_null() {
+        let words = (size / 8).min(input.len());
+        for (index, word) in input.iter_mut().take(words).enumerate() {
+            // SAFETY: the argument is the request's structure, at least
+            // `size` bytes, as the ioctl encoding says.
+            *word = unsafe { (argument as *const u64).add(index).read_unaligned() };
+        }
+    }
+    let result = submit(Operation::Control {
         fd,
         request: request as u32,
         argument,
-    }) as c_int
+    });
+    // Interrupted calls are repeated, and timed-out waits are not refusals.
+    if result < 0 && !matches!(result, -4 | -11 | -62 | -512) {
+        show_refusal(format_args!(
+            "GPU DRM ioctl {:#010x} (command {:#04x}) fd={fd} input={:x?} refused: {result}\n",
+            request as u32,
+            request as u32 & 0xff,
+            input,
+        ));
+    }
+    result as c_int
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn stela_libc_drm_mmap(fd: c_int, offset: u64, size: usize) -> *mut c_void {
-    submit(Operation::Map { fd, offset, size }) as *mut c_void
+    let result = submit(Operation::Map { fd, offset, size });
+    if stela_boot_core::page_window::mapped_address(result).is_err() {
+        show_refusal(format_args!(
+            "GPU DRM map of {size} bytes at offset {offset:#x} fd={fd} refused: {result:#x}\n"
+        ));
+    }
+    result as *mut c_void
 }
 
 #[unsafe(no_mangle)]

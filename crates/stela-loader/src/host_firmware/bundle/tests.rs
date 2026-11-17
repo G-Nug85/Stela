@@ -20,10 +20,11 @@ fn the_complete_bundle_holds_every_recipe_once_by_content() {
     let (count, bytes) = size();
     assert_eq!(count, objects.len());
     // The RTL8168H and RTL8168M share a file, as the RTL9151A and RTL9151AS
-    // do, and amdgpu's `mec` and `mec2`.
-    assert_eq!(count + 3, recipes().count());
-    // The recipes' recorded lengths: 110 files, 182.3 MiB.
-    assert_eq!((count, bytes), (110, 191_103_512), "{count} {bytes}");
+    // do, and amdgpu's `mec` and `mec2`; the other RDNA chips repeat 31 of
+    // their files' bytes under other names.
+    assert_eq!(count + 34, recipes().count());
+    // The recipes' recorded lengths: 285 files, 218.3 MiB.
+    assert_eq!((count, bytes), (285, 228_868_298), "{count} {bytes}");
     // The GPU's large images come last, for a volume short of room.
     assert_eq!(objects.last().unwrap().length, 64_116_464);
     let manifest = manifest(&complete()).unwrap();
@@ -178,10 +179,16 @@ fn a_boot_selects_exactly_the_files_its_pci_functions_need() {
         .iter()
         .any(|block| member.starts_with(&format!("amdgpu/{block}")))
     };
+    // Raphael's own blocks; the other RDNA chips' files are not its.
+    let raphael_block = |member: &str| {
+        ["gc_10_3_6", "psp_13_0_5", "sdma_5_2_6", "dcn_3_1_5", "vcn_3_1_2"]
+            .iter()
+            .any(|block| member.starts_with(&format!("amdgpu/{block}")))
+    };
     let raphael: Vec<&str> = recipes::AMDGPU
         .iter()
         .map(|recipe| recipe.image.member)
-        .filter(|member| !navi48(member))
+        .filter(|member| raphael_block(member))
         .collect();
     let mut expected: Vec<&str> = USB.to_vec();
     expected.extend(&raphael);

@@ -90,6 +90,7 @@ impl LibcClock {
 const ENODEV: i64 = -19;
 const EFAULT: i64 = -14;
 const ENOMEM: i64 = -12;
+const EINVAL: i64 = -22;
 const EAGAIN: i64 = -11;
 const ETIMEDOUT: i64 = -110;
 const ETIME: i64 = -62;
@@ -519,6 +520,16 @@ unsafe fn perform(gpu: &Installed, operation: Operation) -> i64 {
                 argument,
             } => client::control(fd, request, argument),
             Operation::Map { fd, offset, size } => {
+                // A mapping covers the whole pages it reaches, as Linux's
+                // mmap rounds its length up: libdrm maps a buffer object by
+                // the size it was asked for, which for RADV's events,
+                // queries and descriptor pools is a few bytes.
+                let Some(size) = size
+                    .checked_next_multiple_of(PAGE as usize)
+                    .filter(|size| *size != 0)
+                else {
+                    return EINVAL;
+                };
                 let pages = size / PAGE as usize;
                 let Some(address) = gpu.window.reserve(pages) else {
                     return ENOMEM;

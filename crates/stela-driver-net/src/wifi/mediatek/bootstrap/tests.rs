@@ -439,6 +439,46 @@ fn initial_mt7925_wfsys_ack_precedes_dma_stop_and_every_queue_publication() {
     f.retire();
 }
 
+/// The stop a platform runs with bus mastering off: driver-own, the WFSYS
+/// reset and the WFDMA stop, with no queue published. The install after it
+/// makes the same register accesses as the install that stops by itself.
+#[test]
+fn a_quiesced_mt7925_stops_before_any_queue_and_installs_as_one_step_does() {
+    if crate::test_process::isolate_model() {
+        return;
+    }
+    let whole = {
+        let mut f = NativeFixture::new(Chip::Mt7925);
+        f.bar.0.lock().unwrap().values.insert(0xf0140, 0xa5a50011);
+        f.install().unwrap();
+        let log = f.bar.0.lock().unwrap().log.clone();
+        f.retire();
+        log
+    };
+    let mut f = NativeFixture::new(Chip::Mt7925);
+    f.bar.0.lock().unwrap().values.insert(0xf0140, 0xa5a50011);
+    // SAFETY: the model device and its BAR belong to this test alone.
+    unsafe { f.controller.quiesce(false) }.unwrap();
+    {
+        let b = f.bar.0.lock().unwrap();
+        assert!(
+            !b.log.iter().any(|v| v.0 == 2),
+            "a queue before the install"
+        );
+        assert!(b.log.contains(&(1, 0xf0140, 0xa5a50001)), "no WFSYS reset");
+        assert!(
+            b.log.iter().any(|v| v.0 == 1 && v.1 == 0xd4208),
+            "no WFDMA stop"
+        );
+    }
+    // SAFETY: as above.
+    let again = unsafe { f.controller.quiesce(false) };
+    assert!(matches!(again, Err(BootError::WrongPhase)));
+    f.install().unwrap();
+    assert_eq!(f.bar.0.lock().unwrap().log, whole);
+    f.retire();
+}
+
 #[test]
 fn initial_wfsys_failure_keeps_controller_before_any_dma_publication_or_retry() {
     if crate::test_process::isolate_model() {

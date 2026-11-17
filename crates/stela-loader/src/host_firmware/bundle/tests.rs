@@ -19,10 +19,11 @@ fn the_complete_bundle_holds_every_recipe_once_by_content() {
     assert_eq!(digests.len(), objects.len());
     let (count, bytes) = size();
     assert_eq!(count, objects.len());
-    // The RTL8168H and RTL8168M share a file, as the RTL9151A and RTL9151AS do.
-    assert_eq!(count + 3, recipes().count());
-    // The recipes' recorded lengths: 110 files, 121.5 MiB.
-    assert_eq!((count, bytes), (110, 127_437_824), "{count} {bytes}");
+    // The RTL8168H and RTL8168M share a file, as the RTL9151A and RTL9151AS
+    // do, and AMD chips of one family share their non-graphics files.
+    assert_eq!(count + 89, recipes().count());
+    // The recipes' recorded lengths: 285 files, 157.3 MiB.
+    assert_eq!((count, bytes), (285, 164_961_242), "{count} {bytes}");
     // The GPU's large images come last, for a volume short of room.
     assert_eq!(objects.last().unwrap().length, 63_571_696);
     let manifest = manifest(&complete()).unwrap();
@@ -165,6 +166,17 @@ fn a_boot_selects_exactly_the_files_its_pci_functions_need() {
     expected.sort_unstable();
     assert_eq!(members(&navi48), expected);
     assert!(navi48.unknown.is_empty());
+    // A Ryzen 7040 laptop, whose only GPU is its Phoenix APU: its own files.
+    // A Vega APU's (Cezanne's 1638) are none Stela's amdgpu reads.
+    let phoenix = select(&[pci(0x1002, 0x15bf, 0x03), pci(0x1002, 0x1638, 0x03)]);
+    let mut expected: Vec<&str> = USB.to_vec();
+    expected.extend(
+        recipes::AMDGPU_PHOENIX
+            .iter()
+            .map(|recipe| recipe.image.member),
+    );
+    expected.sort_unstable();
+    assert_eq!(members(&phoenix), expected);
     // An NVIDIA display chip no recipe covers is named once.
     let old = select(&[pci(0x10de, 0x1b80, 0x03), pci(0x10de, 0x1b80, 0x03)]);
     assert_eq!(old.unknown, ["pci 10de:1b80"]);

@@ -1569,6 +1569,29 @@ pub(super) fn claim_all(
             Ok(stack) => driven.push((stack, adapter)),
         }
     }
+    // A discrete AMD GPU leaves the PC's AMD integrated GPU, such as a
+    // Ryzen 7000's, with the firmware: one amdgpu GPU carries macOS, and an
+    // APU's graphics core joins only where it is the only one.
+    let amd_chip = |adapter: &gpu::Adapter| {
+        (adapter.vendor == gpu::Vendor::Amd)
+            .then(|| recipes::amd_chip(adapter.device))
+            .flatten()
+    };
+    if driven
+        .iter()
+        .any(|(_, adapter)| amd_chip(adapter).is_some_and(|chip| !recipes::amd_integrated(chip)))
+    {
+        driven.retain(|(_, adapter)| {
+            let integrated = amd_chip(adapter).is_some_and(recipes::amd_integrated);
+            if integrated {
+                output::arguments(format_args!(
+                    "GPU {} left with firmware: an AMD integrated GPU beside a discrete one\n",
+                    adapter.address
+                ));
+            }
+            !integrated
+        });
+    }
     if driven.is_empty() {
         return (claimed, refused);
     }

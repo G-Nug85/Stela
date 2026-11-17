@@ -14,11 +14,13 @@ use super::{
         },
     },
     firmware::{
-        LoadError, Requests,
+        LoadError, Prepared, Requests,
         clc::{Environment as ClcEnvironment, Inputs as ClcInputs},
     },
     identity::{Chip, PciIdentity},
     mcu::device::Context,
+    registers::MmioBar,
+    ring::MmioQueue,
     station::{Station, Wifi},
 };
 use crate::{
@@ -27,7 +29,7 @@ use crate::{
     firmware::Provider,
     wifi::{
         network::Network,
-        regulatory::database::{self, Database},
+        regulatory::database::{self, Country, Database},
     },
 };
 use alloc::sync::Arc;
@@ -121,12 +123,46 @@ pub unsafe fn attach<C: 'static>(
     domain: Arc<dyn DmaDomain>,
     inputs: Inputs,
 ) -> Result<Attached<C>, AttachError> {
+    let vector = inputs.vector;
+    // SAFETY: forwarded from the caller.
+    let quiesced = unsafe { quiesce(pci, base, bytes, resource, inputs) }?;
+    // SAFETY: forwarded from the caller.
+    unsafe { attach_quiesced(quiesced, domain, vector) }
+}
+
+/// A function [`quiesce`] identified, driver-owned, reset and stopped, with
+/// its firmware loaded and no DMA made or allowed yet.
+pub struct Quiesced<C: 'static> {
+    controller: Controller<MmioBar, MmioQueue, C>,
+    prepared: Prepared<'static>,
+    country: Country,
+    alpha2: [u8; 2],
+    inputs: Inputs,
+}
+
+/// [`attach`]'s first part: identify the function, load its firmware and
+/// stop it ([`Controller::quiesce`]) through BAR0 alone, so a platform can
+/// keep bus mastering off until the WLAN engines are reset and stopped,
+/// then call [`attach_quiesced`].
+///
+/// # Safety
+/// [`Controller::new`]'s and [`Controller::quiesce`]'s contracts hold for
+/// `base..base + bytes` and `resource`, which keeps the claimed function's
+/// uncached BAR0 mapping; its interrupts are off.
+pub unsafe fn quiesce<C: 'static>(
+    pci: PciIdentity,
+    base: NonNull<u8>,
+    bytes: usize,
+    resource: Arc<C>,
+    inputs: Inputs,
+) -> Result<Quiesced<C>, AttachError> {
     if pci.chip() != Some(Chip::Mt7925) {
         return Err(AttachError::UnsupportedChip(pci));
     }
     let alpha2 = inputs.network.country.unwrap_or(*b"00");
     let country = inputs
         .database
+        .clone()
         .select(alpha2)
         .map_err(|error| AttachError::Country(alpha2, error))?;
     let owner: Arc<dyn Any> = resource.clone();
@@ -140,6 +176,38 @@ pub unsafe fn attach<C: 'static>(
     // SAFETY: forwarded from the caller.
     let mut controller =
         unsafe { Controller::new(identity, base, bytes, owner, resource, inputs.clock) }?;
+    // SAFETY: forwarded from the caller.
+    unsafe { controller.quiesce(inputs.aspm) }?;
+    Ok(Quiesced {
+        controller,
+        prepared,
+        country,
+        alpha2,
+        inputs,
+    })
+}
+
+/// [`attach`]'s rest, from a [`quiesce`]d function: install its rings, boot
+/// and program it, then register its station interface and keep it
+/// connected to the network its inputs name. `vector` replaces the inputs'
+/// [`Inputs::vector`], as the MSI is programmed after the stop.
+///
+/// # Safety
+/// [`Controller::install`]'s contract holds for `domain` and the inputs'
+/// pages: the function's bus mastering may now be on, for `domain` alone.
+pub unsafe fn attach_quiesced<C: 'static>(
+    quiesced: Quiesced<C>,
+    domain: Arc<dyn DmaDomain>,
+    vector: bool,
+) -> Result<Attached<C>, AttachError> {
+    let Quiesced {
+        mut controller,
+        prepared,
+        country,
+        alpha2,
+        mut inputs,
+    } = quiesced;
+    inputs.vector = vector;
     // SAFETY: forwarded from the caller.
     unsafe { controller.install(inputs.pages, domain, inputs.aspm) }?;
     controller.boot(&prepared)?;

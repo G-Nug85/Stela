@@ -471,8 +471,15 @@ pub type IntelWifi = wifi::intel::link::Station<
     wifi::intel::radio::bios::service::native::NativeBios,
 >;
 
-/// The owners an MT7925 station keeps: its claimed function and BAR0.
-pub type MediatekOwner = (Function<OwnedConfig>, Mapping);
+/// The owners an MT7925 station keeps: its BAR0 from the claim, then its
+/// function and the DMA attachment the acknowledged stop bound it to.
+pub struct MediatekOwner {
+    _registers: Mapping,
+    bound: core::cell::OnceCell<(
+        Function<OwnedConfig>,
+        crate::bus::pci::requester::preparation::Attachment,
+    )>,
+}
 
 /// An MT7925 station over its owned function and BAR0.
 pub type MediatekWifi = mediatek::station::Wifi<MediatekOwner>;
@@ -491,20 +498,34 @@ pub(super) unsafe fn mediatek_wifi(
     services: &dyn NativeServices,
     address: Address,
     completion: Option<crate::bus::irq::MsiMessage>,
-    mut inputs: mediatek::attach::Inputs,
+    inputs: mediatek::attach::Inputs,
 ) -> Result<Located<mediatek::attach::Attached<MediatekOwner>>, Failure> {
-    let Claimed {
-        mut function,
-        domain,
-        bars,
-    } = claim(services, address)?;
-    let pci = match mediatek_identity(&mut function) {
-        Ok(pci) => pci,
-        Err(error) => return Err(keep_error(error, (function, domain))),
+    let minimum = services
+        .minimum_delay()
+        .map_err(|error| (Error::Native(error), None))?;
+    // The function starts as its preparation left it, Bus Master clear and
+    // sealed: the WLAN engines are stopped through BAR0 first, as for the
+    // Intel PCIe Bluetooth function, and only that acknowledged stop binds
+    // the new domain and lets bus mastering on.
+    let mut requester = services
+        .prepare_requester(address)
+        .map_err(|error| (Error::Native(error), None))?;
+    let prepared = (|| -> Result<_, Error> {
+        let function = requester.function_mut();
+        function.power_up(minimum.as_ref())?;
+        let pci = mediatek_identity(function)?;
+        let bars = function.bars()?;
+        // Memory decode alone, MSI and INTx off: Bus Master stays clear.
+        function.enable_polled_decode()?;
+        Ok((pci, bars))
+    })();
+    let (pci, bars) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => return Err(keep_error(error, requester)),
     };
     let registers = match map(services, address, &bars, 0) {
         Ok(registers) => registers,
-        Err(error) => return Err(keep_error(Error::Native(error), (function, domain))),
+        Err(error) => return Err(keep_error(Error::Native(error), requester)),
     };
     let (base, bytes) = match registers
         .bytes()
@@ -514,10 +535,44 @@ pub(super) unsafe fn mediatek_wifi(
         Err(error) => {
             return Err(keep_error(
                 Error::Native(ServiceError::Mapping(error)),
-                (function, domain, registers),
+                (requester, registers),
             ));
         }
     };
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "The serialized BAR and queue retainers require Arc<dyn Any>; this PCI custody remains !Send and !Sync."
+    )]
+    let owner = Arc::new(MediatekOwner {
+        _registers: registers,
+        bound: core::cell::OnceCell::new(),
+    });
+    // SAFETY: the mount prepared this function, D0 with memory decode and
+    // its interrupts off; `owner` keeps its uncached BAR0 mapping. The stop
+    // makes register accesses only.
+    let quiesced = match unsafe {
+        mediatek::attach::quiesce(pci, base.cast(), bytes, owner.clone(), inputs)
+    } {
+        Ok(quiesced) => quiesced,
+        Err(error) => {
+            return Err((
+                Error::MediatekWifi(error),
+                Some(Box::new((requester, owner))),
+            ));
+        }
+    };
+    // SAFETY: the driver owns the WLAN function and has reset WFSYS,
+    // stopped WFDMA and masked its interrupts; no ring, IRQ or worker exists,
+    // and BAR0 stays kept in `owner` through finalization.
+    let bound = match unsafe { requester.acknowledge_quiescence() }.finalize() {
+        Ok(bound) => bound,
+        Err(failure) => {
+            let error = Error::Preparation(failure.error);
+            return Err((error, Some(Box::new((failure, quiesced, owner)))));
+        }
+    };
+    let domain = bound.attachment.domain();
+    let mut function = bound.requester.into_function();
     let configured = (|| -> Result<bool, Error> {
         let interrupt = function.interrupts()?.msi;
         function.enable_polled()?;
@@ -529,25 +584,28 @@ pub(super) unsafe fn mediatek_wifi(
             _ => Ok(false),
         }
     })();
-    inputs.vector = match configured {
+    let kept = |owner: &Arc<MediatekOwner>| Box::new(owner.clone()) as Box<dyn Any>;
+    let vector = match configured {
         Ok(vector) => vector,
-        Err(error) => return Err(keep_error(error, (function, domain, registers))),
+        Err(error) => {
+            return Err((
+                error,
+                Some(Box::new((function, bound.attachment, quiesced, owner))),
+            ));
+        }
     };
-    #[expect(
-        clippy::arc_with_non_send_sync,
-        reason = "The serialized BAR and queue retainers require Arc<dyn Any>; this PCI custody remains !Send and !Sync."
-    )]
-    let owner = Arc::new((function, registers));
-    let kept = Box::new(owner.clone()) as Box<dyn Any>;
-    // SAFETY: the mount claimed the stopped function, mapped its BAR0
-    // uncached and supplied an isolating domain; `owner` keeps the function
-    // and mapping, and its interrupts are off.
-    match unsafe { mediatek::attach::attach(pci, base.cast(), bytes, owner, domain, inputs) } {
+    if owner.bound.set((function, bound.attachment)).is_err() {
+        unreachable!("the owner's function is bound once");
+    }
+    // SAFETY: the acknowledged stop bound `domain` to this function alone,
+    // and its bus mastering is now on for it; `owner` keeps the function,
+    // its attachment and BAR0.
+    match unsafe { mediatek::attach::attach_quiesced(quiesced, domain, vector) } {
         Ok(attached) => Ok(Located {
             location: alloc::format!("{address}"),
             link: attached,
         }),
-        Err(error) => Err((Error::MediatekWifi(error), Some(kept))),
+        Err(error) => Err((Error::MediatekWifi(error), Some(kept(&owner)))),
     }
 }
 

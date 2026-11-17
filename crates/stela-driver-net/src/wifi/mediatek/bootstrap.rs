@@ -35,6 +35,8 @@ pub mod client;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Phase {
     Fresh,
+    /// Driver-owned, reset and stopped, with no ring yet ([`Controller::quiesce`]).
+    Quiesced,
     Queues,
     Firmware,
     Clc,
@@ -321,18 +323,17 @@ impl<I: BarIo, Q: QueueIo, C: 'static> Controller<I, Q, C> {
             Err(Error::WrongPhase)
         }
     }
+    /// The stop `mt7925_pci_probe` makes before its DMA init: driver-own,
+    /// the WFSYS reset, WFDMA stopped, interrupts masked, every queue unused
+    /// and global translation off. Each step is a register access, and none
+    /// needs the function's bus mastering, so a platform that keeps Bus
+    /// Master off until a driver has stopped its engines runs this first and
+    /// [`Self::install`] after it enables bus mastering.
+    ///
     /// # Safety
-    /// As for [`Self::install`]: `source` and `domain` belong to this requester
-    /// and meet `TxRing::install`'s coherent-WB, 32-bit, NoSnoop- and ATS-off
-    /// conditions. Each queue `queue` returns is this requester's own ring
-    /// register window.
-    pub(in crate::wifi::mediatek) unsafe fn install_with(
-        &mut self,
-        source: &dyn PageSource,
-        domain: Arc<dyn DmaDomain>,
-        aspm: bool,
-        mut queue: impl FnMut(u32) -> Result<Q, Error>,
-    ) -> Result<(), Error> {
+    /// [`Self::new`]'s contract holds: the function's BAR0 is this
+    /// controller's, uncached, with interrupts off. No DMA owner is needed.
+    pub unsafe fn quiesce(&mut self, aspm: bool) -> Result<(), Error> {
         self.require(Phase::Fresh)?;
         let s = self.state_mut();
         s.phase = Phase::Quarantined;
@@ -349,6 +350,31 @@ impl<I: BarIo, Q: QueueIo, C: 'static> Controller<I, Q, C> {
         s.control
             .disable_global_translation()
             .map_err(Error::Control)?;
+        s.phase = Phase::Quiesced;
+        Ok(())
+    }
+    /// # Safety
+    /// As for [`Self::install`]: `source` and `domain` belong to this requester
+    /// and meet `TxRing::install`'s coherent-WB, 32-bit, NoSnoop- and ATS-off
+    /// conditions. Each queue `queue` returns is this requester's own ring
+    /// register window.
+    pub(in crate::wifi::mediatek) unsafe fn install_with(
+        &mut self,
+        source: &dyn PageSource,
+        domain: Arc<dyn DmaDomain>,
+        aspm: bool,
+        mut queue: impl FnMut(u32) -> Result<Q, Error>,
+    ) -> Result<(), Error> {
+        if self.phase() == Phase::Fresh {
+            // SAFETY: forwarded; the stop is the first part of the install.
+            unsafe { self.quiesce(aspm) }?;
+        }
+        self.require(Phase::Quiesced)?;
+        if self.state().aspm != Some(aspm) {
+            return Err(Error::WrongPhase);
+        }
+        let s = self.state_mut();
+        s.phase = Phase::Quarantined;
         let c3 = s.identity.chip == Chip::Mt7925;
         // Source order and complete layout; each returned mapping/queue
         // is held before any subsequent fallible allocation/publication.

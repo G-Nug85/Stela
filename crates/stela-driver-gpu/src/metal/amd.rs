@@ -106,14 +106,14 @@ fn admit(
 
 /// RADV as linked into the image, under its own loader entry
 /// (`xtask/src/gpu/nvk.rs`), with its NIR options
-/// (`compat/mesa/radv_nir_options.c`). It has neither of NVK's
-/// driver-internal hooks, so it gets [`super::native::Driver`]'s documented
-/// fallbacks: a commit's submission runs on the caller, and a refused
-/// submission loses the device. An image whose build host lacked the tools
+/// (`compat/mesa/radv_nir_options.c`) and NVK's driver-internal hooks,
+/// from #163 (`compat/mesa/radv_submit.c`): a commit's submission runs on
+/// Mesa's submit thread, and a refused submission fails its command buffer,
+/// not the device. An image whose build host lacked the tools
 /// RADV's build runs holds no RADV, and then no driver here.
 #[cfg(all(feature = "metal-linked", not(test), stela_vulkan_amd))]
 pub const DRIVER: super::native::Driver = {
-    use super::native::{Driver, vk};
+    use super::native::{Driver, Refusals, vk};
     use core::ffi::{c_char, c_void};
     unsafe extern "system" {
         fn radv_icdGetInstanceProcAddr(
@@ -123,12 +123,27 @@ pub const DRIVER: super::native::Driver = {
     }
     unsafe extern "C" {
         fn stela_radv_nir_options(physical: vk::PhysicalDevice, stage: u32) -> *const c_void;
+        fn stela_radv_submit_thread(queue: vk::Queue) -> vk::Result;
+        fn stela_radv_submit_failure(
+            queue: vk::Queue,
+            semaphore: vk::Semaphore,
+            value: u64,
+        ) -> vk::Result;
+        fn stela_radv_forget_failures(queue: vk::Queue) -> u32;
+        fn stela_radv_count_failures(queue: vk::Queue, outstanding: *mut u32);
     }
     Driver {
         get_instance_proc_addr: radv_icdGetInstanceProcAddr,
         nir_options: stela_radv_nir_options,
-        submit_thread: None,
-        refusals: None,
+        // A commit's submission runs where Linux does, not on its PE
+        // (`compat/mesa/radv_submit.c`, from #163).
+        submit_thread: Some(stela_radv_submit_thread),
+        // A refused submission fails its command buffer, not the device.
+        refusals: Some(Refusals {
+            take: stela_radv_submit_failure,
+            forget: stela_radv_forget_failures,
+            count: stela_radv_count_failures,
+        }),
     }
 };
 

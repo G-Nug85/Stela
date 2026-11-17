@@ -226,7 +226,9 @@ pub(super) const RADV: Driver = Driver {
     // AMD's stack gives no Vulkan driver yet.
     released: false,
     model: "radv_query.c",
-    stand_ins: &["radv_nir_options"],
+    // RADV's submit thread and kept refusals (`compat/mesa/radv_submit.c`),
+    // as NVK's `submit_thread`.
+    stand_ins: &["radv_nir_options", "radv_submit"],
     libraries: &[&LIBDRM_AMDGPU],
 };
 /// Every driver the image may link, the first keeping Mesa's entry name.

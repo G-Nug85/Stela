@@ -22,8 +22,8 @@ fn the_complete_bundle_holds_every_recipe_once_by_content() {
     // The RTL8168H and RTL8168M share a file, as the RTL9151A and RTL9151AS
     // do, and amdgpu's `mec` and `mec2`.
     assert_eq!(count + 3, recipes().count());
-    // The recipes' recorded lengths: 98 files, 179.2 MiB.
-    assert_eq!((count, bytes), (98, 187_918_072), "{count} {bytes}");
+    // The recipes' recorded lengths: 110 files, 182.3 MiB.
+    assert_eq!((count, bytes), (110, 191_103_512), "{count} {bytes}");
     // The GPU's large images come last, for a volume short of room.
     assert_eq!(objects.last().unwrap().length, 64_116_464);
     let manifest = manifest(&complete()).unwrap();
@@ -166,14 +166,44 @@ fn a_boot_selects_exactly_the_files_its_pci_functions_need() {
         pci(0x1002, 0x1640, 0x04),
         pci(0x1002, 0x731f, 0x03),
     ]);
+    let navi48 = |member: &str| {
+        [
+            "gc_12_0_1",
+            "psp_14_0_3",
+            "smu_14_0_3",
+            "sdma_7_0_1",
+            "vcn_5_0_0",
+            "dcn_4_0_1",
+        ]
+        .iter()
+        .any(|block| member.starts_with(&format!("amdgpu/{block}")))
+    };
+    let raphael: Vec<&str> = recipes::AMDGPU
+        .iter()
+        .map(|recipe| recipe.image.member)
+        .filter(|member| !navi48(member))
+        .collect();
     let mut expected: Vec<&str> = USB.to_vec();
-    expected.extend(recipes::AMDGPU.iter().map(|recipe| recipe.image.member));
+    expected.extend(&raphael);
     expected.sort_unstable();
     // `mec2` is `mec`'s bytes, which the bundle holds once.
     let found = members(&ryzen);
     assert!(found.iter().all(|member| expected.contains(member)));
-    assert_eq!(found.len(), USB.len() + recipes::AMDGPU.len() - 1);
+    assert_eq!(found.len(), USB.len() + raphael.len() - 1);
     assert_eq!(ryzen.unknown, ["pci 1002:731f"]);
+    // An RX 9070 XT (Navi 48) and its audio function: its own twelve files.
+    let rx9070 = select(&[pci(0x1002, 0x7550, 0x03), pci(0x1002, 0xab40, 0x04)]);
+    let mut expected: Vec<&str> = USB.to_vec();
+    expected.extend(
+        recipes::AMDGPU
+            .iter()
+            .map(|recipe| recipe.image.member)
+            .filter(|member| navi48(member)),
+    );
+    expected.sort_unstable();
+    assert_eq!(members(&rx9070), expected);
+    assert_eq!(expected.len(), USB.len() + 12);
+    assert!(rx9070.unknown.is_empty());
     // An NVIDIA display chip no recipe covers is named once.
     let old = select(&[pci(0x10de, 0x1b80, 0x03), pci(0x10de, 0x1b80, 0x03)]);
     assert_eq!(old.unknown, ["pci 10de:1b80"]);

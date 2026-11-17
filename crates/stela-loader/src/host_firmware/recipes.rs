@@ -1188,6 +1188,69 @@ pub const AMDGPU: &[Recipe] = &[
         575056,
         "31176d1a359aad08d462895eb02184b5d36c8d7570afc380ec889a9c7ffe8cb4",
     ),
+    // Navi 48 (RX 9070 and 9070 XT): GC 12.0.1's IMU, ME, MEC, PFP, RLC and
+    // unified MES, PSP 14.0.3's secure OS and trusted applications, SMU
+    // 14.0.3, SDMA 7.0.1, VCN 5.0.0 and DCN 4.0.1's DMCUB.
+    amdgpu(
+        "amdgpu/gc_12_0_1_imu.bin",
+        132352,
+        "b3b301fb636efc77b63ce4d2ced0f90c851d03c19681852faa45598e6f5773fd",
+    ),
+    amdgpu(
+        "amdgpu/gc_12_0_1_me.bin",
+        267600,
+        "fd5eb0f205a3bb7ec41f42e83a54bdc69151706b02bbee073fa775b8270e4bec",
+    ),
+    amdgpu(
+        "amdgpu/gc_12_0_1_mec.bin",
+        259584,
+        "83fe5e7bffe639ec9771219cde5c9809689168f769b147c86dfd5a1ca991c1a2",
+    ),
+    amdgpu(
+        "amdgpu/gc_12_0_1_pfp.bin",
+        159616,
+        "490bcd26a62e389b3f58acf5c087d324d2324b3188797ff6a36b7a6cdf1ca9ff",
+    ),
+    amdgpu(
+        "amdgpu/gc_12_0_1_rlc.bin",
+        150848,
+        "6ba4459532246a5c415d3cb33c9b1248294e48f67b827e2accb292a8d1a5c0ec",
+    ),
+    amdgpu(
+        "amdgpu/gc_12_0_1_uni_mes.bin",
+        299408,
+        "309d60ad4a0210f8a68e27cae88beddb22b5ae900d70848b1e8ca0eac9d1decd",
+    ),
+    amdgpu(
+        "amdgpu/psp_14_0_3_sos.bin",
+        435632,
+        "28469a0857c813c54a0492423cdf0b0caf757428400036377e19c47e5af62478",
+    ),
+    amdgpu(
+        "amdgpu/psp_14_0_3_ta.bin",
+        291372,
+        "fff8b0b56f21bf1d34c8d1fcf6cc903c2dbb5ef88eb06157c9f08baf95124883",
+    ),
+    amdgpu(
+        "amdgpu/smu_14_0_3.bin",
+        333236,
+        "7624724231b0986b59f59705e7c854c482193f6b3b591ebdda58cb62af81c010",
+    ),
+    amdgpu(
+        "amdgpu/sdma_7_0_1.bin",
+        47104,
+        "73c29e1c1714ebc95d2221ba56e187910902891593010653bf9518937e414a59",
+    ),
+    amdgpu(
+        "amdgpu/vcn_5_0_0.bin",
+        440400,
+        "9a0ab35bf157c835cbbc4a207ba819ea0111e2a65fe7f8c20910ffff3122f903",
+    ),
+    amdgpu(
+        "amdgpu/dcn_4_0_1_dmcub.bin",
+        368288,
+        "74b567655ac89bfe03389b660e973dc3c067aebd464c6389a071662cfbe6237f",
+    ),
 ];
 
 /// A GPU family's name, PCI device IDs and files.
@@ -1200,23 +1263,45 @@ type AmdgpuFamily = (&'static str, &'static [u16], &'static [&'static str]);
 /// core 10.3.6, security processor 13.0.5, DMA engine 5.2.6, display 3.1.5,
 /// video 3.1.2). The driver asks for the video decoder's file in the same
 /// start as the rest and fails without it, so it is required too.
-const AMDGPU_FAMILIES: &[AmdgpuFamily] = &[(
-    "Ryzen 7000 or 9000 desktop graphics (Raphael, Granite Ridge)",
-    &[0x164e, 0x13c0],
-    &[
-        "amdgpu/gc_10_3_6_ce.bin",
-        "amdgpu/gc_10_3_6_pfp.bin",
-        "amdgpu/gc_10_3_6_me.bin",
-        "amdgpu/gc_10_3_6_mec.bin",
-        "amdgpu/gc_10_3_6_mec2.bin",
-        "amdgpu/gc_10_3_6_rlc.bin",
-        "amdgpu/psp_13_0_5_toc.bin",
-        "amdgpu/psp_13_0_5_ta.bin",
-        "amdgpu/sdma_5_2_6.bin",
-        "amdgpu/dcn_3_1_5_dmcub.bin",
-        "amdgpu/vcn_3_1_2.bin",
-    ],
-)];
+const AMDGPU_FAMILIES: &[AmdgpuFamily] = &[
+    (
+        "Radeon RX 9070 and 9070 XT (Navi 48)",
+        // 1002:7550 is the one run under Stela; Navi 48's 1002:7551 boards
+        // would need the kicker images.
+        &[0x7550],
+        &[
+            "amdgpu/gc_12_0_1_imu.bin",
+            "amdgpu/gc_12_0_1_me.bin",
+            "amdgpu/gc_12_0_1_mec.bin",
+            "amdgpu/gc_12_0_1_pfp.bin",
+            "amdgpu/gc_12_0_1_rlc.bin",
+            "amdgpu/gc_12_0_1_uni_mes.bin",
+            "amdgpu/psp_14_0_3_sos.bin",
+            "amdgpu/psp_14_0_3_ta.bin",
+            "amdgpu/smu_14_0_3.bin",
+            "amdgpu/sdma_7_0_1.bin",
+            "amdgpu/vcn_5_0_0.bin",
+            "amdgpu/dcn_4_0_1_dmcub.bin",
+        ],
+    ),
+    (
+        "Ryzen 7000 or 9000 desktop graphics (Raphael, Granite Ridge)",
+        &[0x164e, 0x13c0],
+        &[
+            "amdgpu/gc_10_3_6_ce.bin",
+            "amdgpu/gc_10_3_6_pfp.bin",
+            "amdgpu/gc_10_3_6_me.bin",
+            "amdgpu/gc_10_3_6_mec.bin",
+            "amdgpu/gc_10_3_6_mec2.bin",
+            "amdgpu/gc_10_3_6_rlc.bin",
+            "amdgpu/psp_13_0_5_toc.bin",
+            "amdgpu/psp_13_0_5_ta.bin",
+            "amdgpu/sdma_5_2_6.bin",
+            "amdgpu/dcn_3_1_5_dmcub.bin",
+            "amdgpu/vcn_3_1_2.bin",
+        ],
+    ),
+];
 
 /// The binding amdgpu's files take: Linux's names, as for nouveau's.
 const AMDGPU_TARGET: Target<'static> = Target {

@@ -110,12 +110,12 @@ pub static NVIDIA: GpuStack = GpuStack {
     vulkan: Some(crate::metal::nvidia::DRIVER),
 };
 
-/// amdgpu with its display core, and RADV's admission. Its Vulkan driver is
-/// not given yet, even in an image that holds RADV: a PC with an AMD and
-/// another GPU would then serve a Metal device on each, which no rule
-/// chooses between yet, and RADV has run on no AMD GPU under Stela. Until
-/// then its GPU shows the frames another GPU draws, on the displays wired to
-/// it.
+/// amdgpu with its display core, RADV's admission and, in an image that
+/// holds RADV, RADV as its Vulkan driver: RADV has run the macOS desktop on a
+/// Navi 48 (RX 9070 XT) and a Navi 21 (RX 6800 XT) under Stela. A PC with an
+/// AMD and another GPU then serves a Metal device on each, which no rule
+/// chooses between yet. In an image without RADV its GPU shows the frames
+/// another GPU draws, on the displays wired to it.
 #[cfg(feature = "amdgpu-port")]
 pub static AMD: GpuStack = GpuStack {
     vendor: Vendor::Amd,
@@ -139,8 +139,24 @@ pub static AMD: GpuStack = GpuStack {
     #[cfg(feature = "metal")]
     metal: Some(crate::metal::amd::ADMISSION),
     #[cfg(all(feature = "metal-linked", not(test)))]
-    vulkan: None,
+    vulkan: AMD_VULKAN,
 };
+
+/// RADV, when the image's Mesa build linked it (`stela_vulkan_amd`).
+#[cfg(all(
+    feature = "amdgpu-port",
+    feature = "metal-linked",
+    not(test),
+    stela_vulkan_amd
+))]
+const AMD_VULKAN: Option<crate::metal::native::Driver> = Some(crate::metal::amd::DRIVER);
+#[cfg(all(
+    feature = "amdgpu-port",
+    feature = "metal-linked",
+    not(test),
+    not(stela_vulkan_amd)
+))]
+const AMD_VULKAN: Option<crate::metal::native::Driver> = None;
 
 /// xe with the display code it shares with i915, and ANV's admission. Its
 /// Vulkan driver is not given yet, even in an image that holds ANV: ANV has

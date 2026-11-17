@@ -1037,8 +1037,8 @@ mod tests {
         let manifest = bundle::manifest(&files).unwrap();
         let parsed = bundle::Bundle::parse(&manifest).unwrap();
         assert!(parsed.missing().is_empty());
-        assert_eq!(parsed.objects.len(), 98);
-        assert_eq!(bundle_summary(), "for every supported device (179.2 MiB)");
+        assert_eq!(parsed.objects.len(), 110);
+        assert_eq!(bundle_summary(), "for every supported device (182.3 MiB)");
         // A volume short of room keeps the small files and leaves the large
         // GPU images out, by name.
         let (files, left) = bundle_plan(Some(MARGIN + 40 * MIB), 0);
@@ -1323,7 +1323,7 @@ mod tests {
         let status = bundle_status(dir.path()).unwrap_err();
         assert_eq!(
             status,
-            "the firmware on the stick is incomplete: 3 of 98 files are there"
+            "the firmware on the stick is incomplete: 3 of 110 files are there"
         );
     }
 
@@ -1345,7 +1345,7 @@ mod tests {
         )
         .unwrap();
         let status = bundle_status(dir.path()).unwrap_err();
-        assert!(status.contains("lacks 97 of 98 files"), "{status}");
+        assert!(status.contains("lacks 109 of 110 files"), "{status}");
         assert!(!status.contains("nvidia/"), "{status}");
         assert!(status.contains("1 of its files are damaged"), "{status}");
     }

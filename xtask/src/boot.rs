@@ -121,6 +121,10 @@ pub enum Command {
         /// Include authored hardware fixtures in the mount.
         #[arg(long)]
         diagnostics: bool,
+        /// Also carry amdgpu with its display core, whose GPUs RADV serves
+        /// as the Metal device when the build host built RADV.
+        #[arg(long)]
+        amdgpu: bool,
     },
     /// Boot `stela.efi` with an ARM image in x86 QEMU.
     Run(Box<Run>),
@@ -492,10 +496,12 @@ pub fn run(command: Command) -> Result<ExitCode> {
         Command::Build {
             release,
             diagnostics,
+            amdgpu,
         } => {
             crate::gpu::fetch::fetch(false)?;
             crate::gpu::build_nvk(crate::gpu::default_jobs())?;
-            println!("{}", build_for_boot(release, diagnostics, true)?.display());
+            let built = build_with_features(release, diagnostics, true, amdgpu)?;
+            println!("{}", deploy_for_boot(release, built)?.display());
             Ok(ExitCode::SUCCESS)
         }
         Command::Run(arguments) => launch(*arguments),
@@ -509,6 +515,11 @@ pub fn build(release: bool) -> Result<PathBuf> {
 
 fn build_for_boot(release: bool, diagnostics: bool, nvk: bool) -> Result<PathBuf> {
     let built = build_with_diagnostics(release, diagnostics, nvk)?;
+    deploy_for_boot(release, built)
+}
+
+/// `built`, and with `release` the smaller bootable image beside it.
+fn deploy_for_boot(release: bool, built: PathBuf) -> Result<PathBuf> {
     if !release {
         return Ok(built);
     }
@@ -537,6 +548,15 @@ pub(crate) fn deploy_image(built: &Path, output: &Path) -> Result<()> {
 }
 
 fn build_with_diagnostics(release: bool, diagnostics: bool, nvk: bool) -> Result<PathBuf> {
+    build_with_features(release, diagnostics, nvk, false)
+}
+
+fn build_with_features(
+    release: bool,
+    diagnostics: bool,
+    nvk: bool,
+    amdgpu: bool,
+) -> Result<PathBuf> {
     let mut command = cargo();
     command.args(["build", "--locked", "--manifest-path", BOOT_MANIFEST]);
     command.args(["--target", BOOT_TARGET, "--target-dir", BOOT_TARGET_DIR]);
@@ -545,6 +565,9 @@ fn build_with_diagnostics(release: bool, diagnostics: bool, nvk: bool) -> Result
     }
     if nvk {
         command.args(["--features", "nvk"]);
+    }
+    if amdgpu {
+        command.args(["--features", "amdgpu"]);
     }
     if release {
         command.arg("--release");
